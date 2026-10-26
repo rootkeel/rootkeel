@@ -44,14 +44,16 @@ Guidelines:
 ## Contributor licence agreement
 
 Before we can merge your first pull request, you need to agree to the contributor licence agreement
-below. A bot comments on your pull request with a link; signing takes a minute and covers all your
+below. CLA Assistant posts a link on your pull request; signing takes a minute and covers all your
 future contributions. If you contribute on behalf of your employer, make sure you are allowed to,
 or ask us about a corporate agreement.
 
 ### Individual Contributor Licence Agreement
 
-This agreement is between you ("You") and the Rootkeel project ("We" or "Us"), and applies to
-every Contribution You submit to any repository of the Rootkeel project.
+This agreement is between you ("You") and Damir Šimpović, an individual, the maintainer of Rootkeel
+("We" or "Us"). It applies to every Contribution You submit to any repository of the Rootkeel project
+(github.com/rootkeel). We may transfer Our rights under this agreement, in whole, to a legal entity
+that takes over maintenance of Rootkeel, and that entity then takes Our place in this agreement.
 
 1. **Definitions.** "Contribution" means any work of authorship, including source code,
    documentation and other material, that You intentionally submit to Us for inclusion in Rootkeel,
@@ -92,5 +94,5 @@ every Contribution You submit to any repository of the Rootkeel project.
    provide Your Contributions "as is", without warranties or conditions of any kind. We are not
    obliged to use or include any Contribution.
 
-8. **Acceptance.** You accept this agreement by stating so in the way the pull request bot asks,
-   for example by commenting on Your pull request with the sentence it gives You.
+8. **Acceptance.** You accept this agreement by signing it through the CLA Assistant link posted on
+   Your pull request. Your signature covers all Your future Contributions.
