@@ -1,0 +1,569 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: AGPL-3.0-only
+"""Rootkeel command-line client (rt).
+
+rt login: save this server's owner credential on this computer, in ~/.config/rt/<host>/credential
+(mode 0600), and the server URL in ~/.config/rt/url, so RT_URL and RT_CREDENTIAL_FILE are optional.
+rt logout deletes it again.
+
+rt attach: native grants, version check and reconnect without token logs.
+Leave by detaching (Ctrl+Alt+g, then d); a dropped connection reconnects by itself,
+to the same session, for as long as the grant is not revoked.
+
+With several machines enrolled, name one with --machine (its id or name)."""
+import argparse
+import contextlib
+import getpass
+import hmac
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import json
+import os
+import random
+import re
+import select
+import signal
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+from urllib.parse import urlencode, urlsplit
+
+VERSION = "0.45.1"
+
+
+class CloseWatch:
+    """Follows one direction's WebSocket frames for a close frame.
+
+    Zellij closes the connection with a close frame when the owner detaches or
+    the session ends; a dropped network or tunnel ends it without one.
+    """
+    def __init__(self):
+        self.header, self.skip, self.closed = b"", 0, False
+
+    def feed(self, data):
+        while data and not self.closed:
+            if self.skip:
+                taken = min(self.skip, len(data))
+                self.skip, data = self.skip - taken, data[taken:]
+                continue
+            self.header, data = self.header + data, b""
+            if len(self.header) < 2:
+                return
+            size, offset = self.header[1] & 0x7F, 2
+            if size >= 126:
+                offset += 2 if size == 126 else 8
+                if len(self.header) < offset:
+                    return
+                size = int.from_bytes(self.header[2:offset], "big")
+            offset += 4 if self.header[1] & 0x80 else 0
+            if len(self.header) < offset:
+                return
+            if self.header[0] & 0x0F == 0x8:
+                self.closed = True
+                return
+            data, self.header, self.skip = self.header[offset:], b"", size
+
+
+class NativeGateway:
+    """Zellij 0.45.1 drops URL prefixes. Adapt its loopback traffic to one grant.
+
+    No public unscoped native route is required. The adapter has no owner
+    credential, rejects browser requests, and verifies upstream TLS normally.
+    """
+    def __init__(self, grant, session, ca=None):
+        self.remote = urlsplit(grant["url"])
+        self.prefix = "/g/" + grant["id"]
+        self.session, self.token, self.cookie = session, grant["token"], None
+        self.tls = ssl.create_default_context(cafile=ca)
+        self.connections = set()
+        self.lock = threading.Lock()
+        self.ended = False  # The server closed a WebSocket on purpose (a detach, or the session ended).
+        # Each reconnect starts a new zellij client, which logs in again. The gateway answers those
+        # logins with the broker cookie it already holds, so reconnecting never uses up the
+        # grant's logins; a cookie the broker refuses is dropped and the next login is real.
+        gateway = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, *args):
+                pass  # Neither capability nor terminal bytes belong in logs.
+
+            def do_GET(self):
+                gateway.forward(self)
+
+            def do_POST(self):
+                gateway.forward(self)
+
+        self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.server.daemon_threads = True
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.server.server_port}/{self.session}"
+
+    def __exit__(self, *args):
+        self.server.shutdown()
+        self.server.server_close()
+        with self.lock:
+            for connection in self.connections:
+                try:
+                    connection.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+                connection.close()
+        self.thread.join()
+
+    def forward(self, handler):
+        handler.close_connection = True
+        handler.connection.settimeout(8)
+        upstream = None
+        try:
+            if handler.headers.get("Host") != f"127.0.0.1:{self.server.server_port}" or "Origin" in handler.headers:
+                handler.send_error(403)
+                return
+            path = urlsplit(handler.path)
+            if path.scheme or path.netloc or path.fragment:
+                handler.send_error(400)
+                return
+            length = int(handler.headers.get("Content-Length", "0"))
+            if length < 0 or length > 2 * 1024 * 1024 or "Transfer-Encoding" in handler.headers:
+                handler.send_error(400)
+                return
+            body = handler.rfile.read(length)
+            if len(body) != length:
+                return
+            if handler.command == "POST" and path.path == "/command/login":
+                if not hmac.compare_digest(json.loads(body).get("auth_token", ""), self.token):
+                    handler.send_error(401)
+                    return
+                if self.cookie:
+                    reply = b'{"success":true,"message":"Login successful"}'
+                    handler.connection.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n" +
+                                               b"Set-Cookie: session_token=" + self.cookie.encode() + b"; HttpOnly; Path=/\r\n" +
+                                               b"Content-Length: %d\r\nConnection: close\r\n\r\n" % len(reply) + reply)
+                    return
+            else:
+                cookies = SimpleCookie(handler.headers.get("Cookie", ""))
+                cookie = cookies.get("session_token")
+                if not self.cookie or not cookie or not hmac.compare_digest(cookie.value, self.cookie):
+                    handler.send_error(401)
+                    return
+                allowed = handler.command == "POST" and path.path == "/session" and path.query.split("&")[0] == "session=" + self.session
+                allowed |= handler.command == "GET" and path.path in ("/ws/control", "/ws/terminal/" + self.session)
+                if not allowed:
+                    handler.send_error(403)
+                    return
+            upstream = self.tls.wrap_socket(socket.create_connection((self.remote.hostname, self.remote.port or 443), timeout=8),
+                                            server_hostname=self.remote.hostname)
+            with self.lock:
+                self.connections.update((upstream, handler.connection))
+            headers = {"Host": self.remote.netloc, "Content-Length": str(length), "Connection": "close"}
+            for name in ("Cookie", "Content-Type", "Upgrade", "Sec-WebSocket-Key", "Sec-WebSocket-Version", "Sec-WebSocket-Protocol"):
+                if name in handler.headers:
+                    headers[name] = handler.headers[name]
+            if "Upgrade" in headers:
+                headers["Connection"] = "Upgrade"
+            wire = (f"{handler.command} {self.prefix}{handler.path} HTTP/1.1\r\n" +
+                    "".join(f"{key}: {value}\r\n" for key, value in headers.items()) + "\r\n").encode()
+            upstream.sendall(wire + body)
+            # Read exactly the headers, leaving any immediately sent WS frame on the socket.
+            response = bytearray()
+            while not response.endswith(b"\r\n\r\n"):
+                chunk = upstream.recv(1)
+                if not chunk or len(response) >= 16384:
+                    raise ValueError("Invalid upstream response")
+                response.extend(chunk)
+            if response.startswith(b"HTTP/1.1 401 ") and path.path != "/command/login":
+                self.cookie = None  # Refused (the grant ended, or its login was dropped): log in again next time.
+            for line in response.decode("latin1").split("\r\n"):
+                if line.lower().startswith("set-cookie:"):
+                    returned = SimpleCookie(line.split(":", 1)[1].strip())
+                    if "session_token" in returned:
+                        self.cookie = returned["session_token"].value
+            handler.connection.sendall(response)
+            if response.startswith(b"HTTP/1.1 101 "):
+                upstream.settimeout(None)
+                handler.connection.settimeout(None)
+                # A server close that answers the client's own close is no detach.
+                server_close, client_close = CloseWatch(), CloseWatch()
+                while True:
+                    ready, _, _ = select.select((upstream, handler.connection), (), (), 0 if upstream.pending() else 30)
+                    # TLS can already hold a frame even when its socket is not readable.
+                    if upstream.pending() and upstream not in ready:
+                        ready.append(upstream)
+                    for source in ready:
+                        chunk = source.recv(65536)
+                        if not chunk:
+                            return
+                        (server_close if source is upstream else client_close).feed(chunk)
+                        self.ended |= server_close.closed and not client_close.closed
+                        (handler.connection if source is upstream else upstream).sendall(chunk)
+            else:
+                while chunk := upstream.recv(65536):
+                    handler.connection.sendall(chunk)
+        except (OSError, ValueError, TypeError):
+            return  # A disconnected request cannot produce credentials in an error log.
+        finally:
+            with self.lock:
+                self.connections.discard(upstream)
+                self.connections.discard(handler.connection)
+            if upstream:
+                upstream.close()
+
+
+def request(base, path, credential, data=None, ca=None):
+    headers = {"Authorization": "Bearer " + credential} if credential else {}
+    if data is not None:
+        data = json.dumps(data).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(base + path, data=data, headers=headers)
+    with urllib.request.urlopen(req, context=ssl.create_default_context(cafile=ca), timeout=8) as response:
+        return response.read()
+
+
+def same_origin(url, base):
+    """True when url is on base's origin; the default port may be spelled or omitted."""
+    a, b = urlsplit(url), urlsplit(base)
+    return (a.scheme, a.hostname, a.port or 443) == (b.scheme, b.hostname, b.port or 443)
+
+
+def terminal_origin(url, base):
+    """True when url is the owner's terminal origin for base: owner.<base host>, base's port."""
+    a, b = urlsplit(url), urlsplit(base)
+    return (a.scheme == b.scheme == "https" and bool(b.hostname) and a.hostname == "owner." + b.hostname
+            and (a.port or 443) == (b.port or 443))
+
+
+def refusal(error):
+    """An HTTP error's status and the server's reason: printable text only, at most 300 characters."""
+    try:
+        with error:  # Closes the response, read or not.
+            body = error.read().decode(errors="replace").strip()
+    except OSError:
+        body = ""
+    if body.startswith("<"):
+        body = error.reason or ""  # A proxy's HTML error page, not the service's reason.
+    return f"({error.code}): " + "".join(c if c.isprintable() else " " for c in body)[:300]
+
+
+def config_dir():
+    return Path.home() / ".config" / "rt"
+
+
+def host_key(base):
+    """The service's host, with its port when not 443: one signed-in credential per service."""
+    parts = urlsplit(base)
+    return parts.hostname + (f":{parts.port}" if parts.port and parts.port != 443 else "")
+
+
+def credential_path(base):
+    return config_dir() / host_key(base) / "credential"
+
+
+def stored_url():
+    """The service rt login last signed in to, used when neither --url nor RT_URL names one."""
+    try:
+        return (config_dir() / "url").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def write_private(path, text):
+    """Write a file only this user can read (0600), in directories only this user can open (0700)."""
+    for directory in (config_dir(), path.parent):
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        directory.chmod(0o700)
+    temporary = path.with_name("." + path.name + ".tmp")
+    temporary.unlink(missing_ok=True)
+    fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, "w") as file:
+        file.write(text)
+        file.flush()
+        os.fsync(file.fileno())
+    os.replace(temporary, path)
+
+
+def owner_credential(explicit, base):
+    """--credential-file or RT_CREDENTIAL_FILE when given, else this computer's rt login for base, else a prompt."""
+    if explicit:
+        return Path(explicit).read_text().strip()
+    path = credential_path(base)
+    if path.is_file():
+        return path.read_text().strip()
+    print(f"rt is not signed in to {host_key(base)} on this computer: run rt login --url {base} to save the owner "
+          "credential once.", file=sys.stderr)
+    return getpass.getpass("Owner credential: ")
+
+
+def read_credential():
+    """The owner credential from piped stdin or a hidden prompt; never from the command line."""
+    if sys.stdin.isatty():
+        value = getpass.getpass("Owner credential (the server's <state>/owner file): ")
+    else:
+        value = sys.stdin.readline()
+    return value.strip()
+
+
+def login(args, base):
+    """Check the owner credential against the server, then keep it for this server, readable only by this user."""
+    credential = read_credential()
+    if len(credential) < 32 or not credential.isprintable() or " " in credential:
+        print("rt login refused: an owner credential is the single line of at least 32 characters in the server's "
+              "<state>/owner file. Nothing was saved.", file=sys.stderr)
+        return 2
+    try:
+        state = json.loads(request(base, "/api/state", credential, ca=args.ca_cert))
+    except urllib.error.HTTPError as error:
+        print(f"rt login refused {refusal(error)}. Nothing was saved; check the credential and --url.", file=sys.stderr)
+        return 1
+    path = credential_path(base)
+    write_private(path, credential + "\n")
+    write_private(config_dir() / "url", base + "\n")
+    machines = [m for m in state.get("machines", []) if m.get("enabled")]
+    print(f"Signed in to {host_key(base)}. The owner credential is in {path}, readable only by you.\n"
+          + (f"Enrolled machines: {len(machines)}. Next: rt attach main (your session's name)" if machines else
+             "No machine is enrolled yet. Next: rt enrollment, then rt enroll on the machine to share."))
+    if args.credential_file:
+        print("RT_CREDENTIAL_FILE (or --credential-file) is set, so rt keeps using that file; unset it to use this "
+              "login.", file=sys.stderr)
+    return 0
+
+
+def logout(args, base):
+    """Delete rt's own saved credential for base (never a file you named). The credential itself stays valid."""
+    path = credential_path(base)
+    if not path.is_file():
+        print(f"rt is not signed in to {host_key(base)} on this computer; nothing to do.", file=sys.stderr)
+        return 1
+    path.unlink()
+    with contextlib.suppress(OSError):
+        path.parent.rmdir()
+    if stored_url() == base:
+        (config_dir() / "url").unlink(missing_ok=True)
+    print(f"Signed out of {host_key(base)}: this computer no longer keeps its owner credential. To make the credential "
+          "itself stop working, rotate it on the server (docs/operations.md).")
+    return 0
+
+
+def when(stamp):
+    if not stamp:
+        return "-"
+    if isinstance(stamp, (int, float)):
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp))
+    return stamp[:16].replace("T", " ")
+
+
+def table(rows):
+    widths = [max(len(row[i]) for row in rows) for i in range(len(rows[0]))]
+    for row in rows:
+        print("  ".join(cell.ljust(width) for cell, width in zip(row, widths)).rstrip())
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("action", choices=["attach", "login", "logout", "machines", "enrollment", "enroll", "grant", "grants",
+                                           "revoke", "machine-revoke", "audit"])
+    parser.add_argument("target", nargs="?", help="session name, grant id, machine, or enrollment output filename")
+    parser.add_argument("--url", default=os.environ.get("RT_URL"))
+    parser.add_argument("--credential-file", default=os.environ.get("RT_CREDENTIAL_FILE"))
+    parser.add_argument("--ca-cert", default=os.environ.get("RT_CA_CERT"))
+    parser.add_argument("--zellij", default="zellij")
+    parser.add_argument("--machine", default=os.environ.get("RT_MACHINE"),
+                        help="attach, grant: the machine (id or name) when several are enrolled")
+    parser.add_argument("--name", help="enrollment: a name for the machine to enroll, used with --machine")
+    parser.add_argument("--create", action="store_true",
+                        help="attach, grant: start a new session with this name if the machine has none")
+    args = parser.parse_args()
+    args.url = args.url or stored_url()
+    if not args.url:
+        parser.error("Set RT_URL, supply --url or run rt login --url URL")
+    base = args.url.rstrip("/")
+    parts = urlsplit(base)
+    if parts.scheme != "https" or not parts.hostname or parts.path or parts.query or parts.fragment or parts.username:
+        parser.error("URL must be an HTTPS origin")
+    if args.action == "enroll":
+        if not args.target:
+            parser.error("enroll requires an output filename")
+        if Path(args.target).exists():
+            parser.error("Enrollment output already exists; choose another filename")
+        code = getpass.getpass("One-use enrollment code: ")
+        config = json.loads(request(base, "/api/enroll", "", {"code": code}, args.ca_cert))
+        if not same_origin(config.get("origin", base), base):
+            print("Enrollment refused: the server reports origin " + str(config.get("origin")) + ", not " + base +
+                  ". Nothing was saved; run rt machine-revoke " + str(config.get("id")) +
+                  " on that server and check RT_URL names the intended environment.", file=sys.stderr)
+            return 2
+        if args.ca_cert:
+            config["ca_file"] = str(Path(args.ca_cert).resolve())
+        fd = os.open(args.target, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "w") as file:
+            json.dump(config, file)
+        print(f"Machine credential for {config.get('name') or config.get('id')} in environment "
+              f"{config.get('environment', '?')} saved; its agent dials {config['relay_host']}:{config.get('relay_port', 443)} "
+              "only. Transfer it privately to the Linux machine and run agent/install.sh there.")
+        return 0
+    if args.action == "login":
+        return login(args, base)
+    if args.action == "logout":
+        return logout(args, base)
+    credential = owner_credential(args.credential_file, base)
+    api = lambda path, data=None: request(base, path, credential, data, args.ca_cert)
+    try:
+        return command(args, parser, base, api)
+    except urllib.error.HTTPError as error:
+        print(f"rt {args.action} refused {refusal(error)}", file=sys.stderr)
+        return 1
+
+
+def version_path(machine):
+    return "/api/version?" + urlencode({"machine": machine}) if machine else "/api/version"
+
+
+def command(args, parser, base, api):
+    # An unknown session name is refused unless --create asks for a new session.
+    session = {"session": args.target} | ({"create": True} if args.create else {}) | (
+        {"machine": args.machine} if args.machine else {})
+    if args.action == "machines":
+        machines = json.loads(api("/api/state"))["machines"]
+        rows = [("MACHINE", "NAME", "STATE", "ENROLLED")]
+        rows += [(m["id"], m.get("name") or "-", "enabled" if m["enabled"] else "revoked", when(m.get("enrolled")))
+                 for m in machines]
+        table(rows)
+        if not machines:
+            print("No machine is enrolled yet: run rt enrollment, then rt enroll on the machine to share.")
+        return 0
+    if args.action == "grants":
+        # Open grants: they stay open until revoked, unless the operator set a time limit.
+        rows = [("GRANT", "MACHINE", "SESSION", "ENDS")]
+        rows += [(g["id"], g.get("machine_name") or g["machine"], g["session"],
+                  "when revoked" if g.get("permanent") else when(g["expires"]))
+                 for g in json.loads(api("/api/state"))["grants"] if not g["revoked"]]
+        table(rows)
+        print("End one with: rt revoke GRANT" if len(rows) > 1 else "No open session grants.")
+        return 0
+    if args.action == "enrollment":
+        result = json.loads(api("/api/enrollment", {"name": args.name} if args.name else {}))
+        # The code is a credential: it goes to this terminal only.
+        print(f"Enrollment code (single use, valid {result['expires_in'] // 60} minutes): {result['code']}\n"
+              f"Next: rt enroll machine.json --url {base}, enter this code, then copy machine.json to the machine "
+              "to share and run sudo agent/install.sh <user> machine.json there.")
+        return 0
+    if args.action == "machine-revoke":
+        machine = args.target or args.machine
+        result = json.loads(api("/api/machine-revoke", {"machine": machine} if machine else {}))
+        print(f"Revoked machine {result['machine']}: its credential no longer connects, and its session grants ended.")
+        return 0
+    if args.action != "attach":
+        if args.action in ("grant", "revoke") and not args.target:
+            parser.error("This action requires a target")
+        action = "grants" if args.action == "grant" else args.action
+        data = session if action == "grants" else {"id": args.target}
+        result = api("/api/" + action, None if action == "audit" else data)
+        # Grant commands intentionally deliver credentials privately.
+        print(result.decode())
+        return 0
+    if not args.target:
+        parser.error("attach requires a named session")
+    local = subprocess.check_output([args.zellij, "--version"], text=True).strip()
+    if local != "zellij " + VERSION:
+        print(f"Client version mismatch: need Zellij {VERSION}; found {local}.", file=sys.stderr)
+        return 2
+    server = api(version_path(args.machine)).decode().strip()
+    if server != VERSION:
+        print(f"Server version mismatch: need {VERSION}; found {server}.", file=sys.stderr)
+        return 2
+    # Closing the terminal window (SIGHUP) or a kill (SIGTERM) stops rt like Ctrl-C, so its grant is revoked.
+    for number in (signal.SIGHUP, signal.SIGTERM):
+        signal.signal(number, signal.default_int_handler)
+    grant = json.loads(api("/api/grants", session))
+    if not re.fullmatch(r"g_[0-9a-f]{24}", grant["id"]) or not terminal_origin(grant["url"], base) or \
+            urlsplit(grant["url"]).path != "/g/" + grant["id"] + "/" + args.target or \
+            urlsplit(grant["url"]).query or urlsplit(grant["url"]).fragment:
+        # A broker configured for another domain must not redirect the native client.
+        api("/api/revoke", {"id": grant["id"]})
+        print("Server attach URL " + grant["url"] + " is not on " + base +
+              "; check RT_URL and the server's RT_PUBLIC_HOST.", file=sys.stderr)
+        return 2
+    # Reconnects check the machine this grant opened, whatever else is enrolled meanwhile.
+    machine = grant.get("machine") or args.machine
+    delay = 1
+    try:
+        with tempfile.TemporaryDirectory(prefix="rt-native-") as home, NativeGateway(grant, args.target, args.ca_cert) as gateway:
+            env = dict(os.environ, HOME=home, XDG_CONFIG_HOME=home + "/config", XDG_CACHE_HOME=home + "/cache", XDG_DATA_HOME=home + "/data")
+            argv = [args.zellij, "attach", gateway.url, "--token=" + grant["token"]]
+            while True:
+                try:
+                    state = json.loads(api("/api/state"))
+                    current = next(g for g in state["grants"] if g["id"] == grant["id"])
+                    # Only a revoke ends a grant, unless the operator set a time limit (permanent false, then expires).
+                    if current["revoked"] or not current.get("permanent") and time.time() >= current["expires"]:
+                        print("Grant ended: " + (current["revoked"] or "expired") + ".", file=sys.stderr)
+                        break
+                    server = api(version_path(machine)).decode().strip()
+                    if server != VERSION:
+                        print(f"Server version mismatch: need {VERSION}; found {server}.", file=sys.stderr)
+                        break
+                    started, gateway.ended = time.monotonic(), False
+                    child = subprocess.Popen(argv, env=env)
+                    try:
+                        child.wait()
+                    except KeyboardInterrupt:
+                        child.terminate()
+                        child.wait()
+                        raise
+                    if gateway.ended:
+                        # Zellij closed the connection: a detach (Ctrl+Alt+g, d) or the session ended.
+                        print(f"Detached from session {args.target}, or it ended; not reconnecting.", file=sys.stderr)
+                        break
+                    if time.monotonic() - started > 30:
+                        delay = 1
+                except urllib.error.HTTPError as error:
+                    if error.code in (401, 403, 410):
+                        reason = refusal(error)
+                        hint = " If the owner credential was rotated, run rt login again." if error.code == 401 else ""
+                        print(f"Access ended {reason}{hint}", file=sys.stderr)
+                        break
+                    # Offline relay/host is retried without obtaining a new grant.
+                    error.close()
+                except (urllib.error.URLError, TimeoutError):
+                    pass
+                print(f"Disconnected; retrying in {delay}s. Ctrl-C to stop.", file=sys.stderr)
+                time.sleep(delay + random.uniform(0, 0.25))
+                delay = min(delay * 2, 30)
+    except KeyboardInterrupt:
+        # Ctrl-C reaches rt only while it connects or waits to reconnect; while attached it goes to the machine.
+        print("Stopped; the session keeps running on the machine.", file=sys.stderr)
+    finally:
+        try:
+            api("/api/revoke", {"id": grant["id"]})
+        except (urllib.error.URLError, TimeoutError):
+            pass  # Offline: the grant stays open; rt grants lists it and rt revoke ends it.
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        print("\nrt stopped.", file=sys.stderr)
+        sys.exit(130)
+    except urllib.error.HTTPError as error:
+        print(f"rt refused {refusal(error)}", file=sys.stderr)
+        sys.exit(1)
+    except (urllib.error.URLError, OSError, ValueError, subprocess.CalledProcessError) as error:
+        detail = error.reason if isinstance(error, urllib.error.URLError) else error
+        print(f"rt failed ({detail}): check endpoint connectivity, credential file and Zellij installation.", file=sys.stderr)
+        sys.exit(1)

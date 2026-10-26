@@ -1,0 +1,6 @@
+# The agent's Python dependencies in the agent test image, installed for
+# Debian's Python 3.13 in place of Debian's older aiohttp. (The installer uses the
+# distribution's python3-aiohttp instead.)
+# agent.txt pins them and every dependency by version and SHA-256; regenerate it with
+#   uv pip compile --universal --python-version 3.13 --generate-hashes --no-header --annotation-style line agent.in -o agent.txt
+aiohttp==3.14.5

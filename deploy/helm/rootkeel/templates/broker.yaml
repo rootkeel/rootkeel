@@ -1,0 +1,172 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- $fullname := include "rootkeel.fullname" . }}
+{{- if not .Values.persistence.existingClaim }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "rootkeel.stateClaim" . }}
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+  {{- if .Values.persistence.keep }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
+spec:
+  accessModes:
+    {{- toYaml .Values.persistence.accessModes | nindent 4 }}
+  {{- with .Values.persistence.storageClass }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.persistence.size }}
+---
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-broker
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  # One broker: its state is one SQLite database on a ReadWriteOnce volume.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rootkeel.selector" (list . "broker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rootkeel.labels" . | nindent 8 }}
+        app.kubernetes.io/component: broker
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      {{- include "rootkeel.podCommon" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        # What scripts/prepare.sh does for Compose: write the owner credential and the database
+        # encryption key (256 random bits each, as hex) on first start, never replacing them.
+        - name: prepare-state
+          image: {{ .Values.images.broker }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          command:
+            - python3
+            - -c
+            - |
+              import os, secrets
+              os.umask(0o077)
+              os.makedirs("/state/db", exist_ok=True)
+              for name in ("owner", "db-key"):
+                  path = "/state/" + name
+                  if not os.path.exists(path) or os.path.getsize(path) == 0:
+                      with open(path + ".new", "w") as file:
+                          file.write(secrets.token_hex(32) + "\n")
+                      os.replace(path + ".new", path)
+              print("State ready in the volume; no credentials printed.")
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: state
+              mountPath: /state
+      containers:
+        - name: broker
+          image: {{ .Values.images.broker }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          env:
+            - name: RT_ENVIRONMENT
+              value: {{ .Values.environment | quote }}
+            - name: RT_PUBLIC_HOST
+              value: {{ .Values.publicHost | quote }}
+            - name: RT_PUBLIC_PORT
+              value: {{ .Values.publicPort | int64 | quote }}
+            - name: RT_RELAY_HOST
+              value: {{ .Values.relayHost | quote }}
+            - name: RT_HSTS_MAX_AGE
+              value: {{ .Values.hstsMaxAge | int64 | quote }}
+            - name: RT_OWNER_FILE
+              value: /state/owner
+            - name: RT_DB
+              value: /state/db/broker.sqlite
+            - name: RT_DB_KEY_FILE
+              value: /state/db-key
+            - name: RT_RELAY_VHOST_URL
+              value: http://{{ $fullname }}-relay:8080
+            # Resolves to the front door pods' own addresses (a headless Service): only requests from
+            # them may name the client in X-Forwarded-For (per-client rate limits).
+            - name: RT_FRONT_DOOR_HOST
+              value: {{ $fullname }}-proxy-pods
+            - name: RT_GRANT_IDLE_TIMEOUT
+              value: {{ .Values.grantIdleTimeout | int64 | quote }}
+            - name: RT_GRANT_MAX_LIFETIME
+              value: {{ .Values.grantMaxLifetime | int64 | quote }}
+          ports:
+            - name: http
+              containerPort: 8080
+            - name: policy
+              containerPort: 8081
+          readinessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: http
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with .Values.broker.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: state
+              mountPath: /state
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: state
+          persistentVolumeClaim:
+            claimName: {{ include "rootkeel.stateClaim" . }}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-broker
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: broker
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "rootkeel.selector" (list . "broker") | nindent 4 }}
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+    - name: policy
+      port: 8081
+      targetPort: policy

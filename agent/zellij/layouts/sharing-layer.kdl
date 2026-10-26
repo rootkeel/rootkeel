@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Wait for the first client's terminal dimensions, then start a plain shell.
+layout {
+    pane borderless=true command="sh" {
+        args "-c" "while [ \"$(stty size 2>/dev/null)\" = '0 0' ]; do sleep 0.2; done; exec bash -l"
+    }
+}

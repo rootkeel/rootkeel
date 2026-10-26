@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: AGPL-3.0-only
+// Plain-shell sharing layer for Zellij 0.45.1.
+default_mode "locked"
+default_layout "sharing-layer"
+pane_frames false
+simplified_ui true
+show_startup_tips false
+show_release_notes false
+session_serialization false
+
+// Mouse: keep Zellij's host-terminal mouse reporting on so mouse events reach
+// the inner application, but keep Zellij's own mouse behaviour out of the way.
+mouse_mode true
+scroll_mode_sync false
+advanced_mouse_actions false
+mouse_hover_effects false
+mouse_hover_tips false
+
+web_sharing "on"
+web_server_ip "127.0.0.1"
+web_server_port 8082
+
+// The web client's own default is 12px on a desktop but 24px on a phone or
+// tablet, which leaves room for only a few columns; this keeps 12px for both.
+// Pinching the terminal still zooms it.
+web_client {
+    font_size 12
+}
+
+keybinds clear-defaults=true {
+    locked {
+        bind "Ctrl Alt g" { SwitchToMode "Normal"; }
+    }
+    normal {
+        bind "Ctrl Alt g" "Esc" "Enter" { SwitchToMode "Locked"; }
+        bind "d" { Detach; }
+    }
+}

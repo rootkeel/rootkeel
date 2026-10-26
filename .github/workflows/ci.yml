@@ -1,0 +1,149 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Checks for every pull request and every push to main, on GitHub-hosted runners only.
+name: CI
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Tools
+        run: pip install --disable-pip-version-check pyflakes==4.0.3 reuse==6.2.0
+      - name: Python
+        run: |
+          python -m py_compile rt rootkeel/*.py scripts/*.py tests/unit/*.py tests/e2e/*.py
+          pyflakes rt rootkeel scripts/*.py tests/unit tests/e2e
+      - name: Shell
+        run: |
+          for script in agent/install.sh scripts/*.sh scripts/lib/*.sh tests/e2e/*.sh; do bash -n "$script"; done
+          shellcheck agent/install.sh scripts/*.sh scripts/lib/*.sh tests/e2e/*.sh
+      - name: Licence headers
+        run: reuse lint
+      - name: Example environment and Compose file
+        run: |
+          python -m rootkeel.config check-env server/example.env
+          state=$(mktemp -d)
+          sed "s#^RT_STATE_DIR=.*#RT_STATE_DIR=$state#" server/example.env > "$RUNNER_TEMP/ci.env"
+          docker compose --project-name rootkeel-ci --env-file "$RUNNER_TEMP/ci.env" -f server/compose.yaml config --quiet
+
+  helm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Helm
+        env:
+          HELM_VERSION: 3.22.1
+          HELM_SHA256: 896cf63684a42a723d61c980369d6e588330927deb13676ca0d85006dd6da0ea
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/helm.tgz" "https://get.helm.sh/helm-v$HELM_VERSION-linux-amd64.tar.gz"
+          echo "$HELM_SHA256  $RUNNER_TEMP/helm.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/helm.tgz" -C "$RUNNER_TEMP" --strip-components=1 linux-amd64/helm
+      - name: Chart configuration matches the Compose stack
+        run: |
+          for file in nginx.conf site.conf.template frps.toml; do
+            cmp "server/config/$file" "deploy/helm/rootkeel/files/$file"
+          done
+      - name: Lint and render
+        run: |
+          helm=$RUNNER_TEMP/helm
+          chart=deploy/helm/rootkeel
+          for values in "$chart/values.yaml" "$chart/ci/nodeport-values.yaml"; do
+            "$helm" lint --strict "$chart" -f "$values"
+            "$helm" template rootkeel "$chart" -f "$values" > "$RUNNER_TEMP/rendered.yaml"
+          done
+          # Values the environment file would refuse are refused here too.
+          for bad in images.broker=example/broker:latest relayHost=term.example.com grantIdleTimeout=30; do
+            if "$helm" template rootkeel "$chart" --set "$bad" > /dev/null 2>&1; then
+              echo "helm template accepted $bad" >&2
+              exit 1
+            fi
+          done
+
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Dependencies
+        run: |
+          pip install --disable-pip-version-check --no-deps --require-hashes --only-binary :all: -r requirements/broker.txt
+      - name: Unit tests
+        working-directory: tests/unit
+        run: PYTHONPATH=../.. python -m unittest discover -v
+
+  images:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: |
+          docker buildx build --load -f images/broker.Dockerfile --target runtime -t rootkeel-ci/broker .
+          docker buildx build --load -f images/broker.Dockerfile --target test -t rootkeel-ci/broker-test .
+          docker buildx build --load -f images/relay.Dockerfile -t rootkeel-ci/relay .
+          docker buildx build --load -f images/agent.Dockerfile -t rootkeel-ci/agent .
+      - name: Broker image contents
+        run: |
+          [ "$(docker image inspect -f '{{.Config.User}}' rootkeel-ci/broker)" = 65534:65534 ]
+          python_version=$(sed -n 's/^FROM python:\([0-9.]*\)-slim.*/\1/p' images/broker.Dockerfile)
+          packages=$(sed -n 's/^\([a-z0-9._-]*==[^ ;]*\).*/\1/p' requirements/broker.txt | sort)
+          docker run --rm -e PYTHON_WANT="$python_version" -e PACKAGES_WANT="$packages" --entrypoint sh rootkeel-ci/broker -euc '
+            [ "$(ls /opt/rootkeel | tr "\n" " ")" = "rootkeel rt " ]
+            [ "$(python3 -c "import platform; print(platform.python_version())")" = "$PYTHON_WANT" ]
+            got=$(python3 -c "import importlib.metadata as m; print(\"\n\".join(sorted(d.metadata[\"Name\"].lower() + \"==\" + d.version for d in m.distributions())))")
+            [ "$got" = "$PACKAGES_WANT" ] || { printf "broker image packages:\n%s\n" "$got" >&2; exit 1; }
+            python3 -c "import rootkeel.broker, rootkeel.admin, rootkeel.config"
+            [ -s /usr/share/doc/rootkeel/LICENSE ]'
+      - name: Relay and agent images
+        run: |
+          [ "$(docker image inspect -f '{{.Config.User}}' rootkeel-ci/relay)" = 65534:65534 ]
+          docker run --rm --entrypoint /usr/local/bin/frps rootkeel-ci/relay --version
+          [ "$(docker image inspect -f '{{.Config.User}}' rootkeel-ci/agent)" = 1001:1001 ]
+          docker run --rm --entrypoint sh rootkeel-ci/agent -euc '
+            [ "$(zellij --version)" = "zellij 0.45.1" ]
+            frpc --version
+            python3 -c "import rootkeel.agent, rootkeel.terminal"
+            [ -s /usr/share/doc/zellij/LICENSE.md ] && [ -s /usr/share/doc/frp/LICENSE ]'
+      - name: Process isolation as root in a disposable container
+        run: docker run --rm --user 0:0 --entrypoint sh rootkeel-ci/broker-test -euc 'cd tests/unit && PYTHONPATH=/opt/rootkeel python3 -m unittest -v test_process_isolation'
+
+  # The whole server, machines and clients in containers on the runner (tests/e2e/run.sh).
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: End-to-end test
+        run: sudo tests/e2e/run.sh
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256: 551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/gitleaks.tgz" "https://github.com/gitleaks/gitleaks/releases/download/v$GITLEAKS_VERSION/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "$GITLEAKS_SHA256  $RUNNER_TEMP/gitleaks.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/gitleaks.tgz" -C "$RUNNER_TEMP" gitleaks
+          "$RUNNER_TEMP/gitleaks" git --no-banner --redact .
+          "$RUNNER_TEMP/gitleaks" dir --no-banner --redact .

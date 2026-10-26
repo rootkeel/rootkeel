@@ -1,0 +1,91 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- $fullname := include "rootkeel.fullname" . }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-relay
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: relay
+spec:
+  # One relay: it holds every machine's tunnel, and the broker reaches each machine through it.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "rootkeel.selector" (list . "relay") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "rootkeel.labels" . | nindent 8 }}
+        app.kubernetes.io/component: relay
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- include "rootkeel.podCommon" . | nindent 6 }}
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: {{ .Values.images.relay }}
+          imagePullPolicy: {{ .Values.images.pullPolicy }}
+          ports:
+            - name: tunnel
+              containerPort: 7000
+            - name: vhost
+              containerPort: 8080
+          readinessProbe:
+            tcpSocket:
+              port: tunnel
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: tunnel
+            periodSeconds: 20
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          {{- with .Values.relay.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: config
+              mountPath: /etc/rootkeel
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: {{ $fullname }}-relay
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-relay
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+    app.kubernetes.io/component: relay
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "rootkeel.selector" (list . "relay") | nindent 4 }}
+  ports:
+    - name: tunnel
+      port: 7000
+      targetPort: tunnel
+    - name: vhost
+      port: 8080
+      targetPort: vhost

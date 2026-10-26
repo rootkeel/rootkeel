@@ -1,0 +1,21 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- if .Values.tls.certManager.enabled }}
+# cert-manager issues the front door's certificate into the Secret it mounts. The front door reads it
+# at start: restart it after a renewal (docs/helm.md).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "rootkeel.fullname" . }}
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "rootkeel.tlsSecret" . }}
+  dnsNames:
+    - {{ .Values.publicHost }}
+    - owner.{{ .Values.publicHost }}
+    - {{ .Values.relayHost }}
+  issuerRef:
+    {{- toYaml .Values.tls.certManager.issuerRef | nindent 4 }}
+{{- end }}

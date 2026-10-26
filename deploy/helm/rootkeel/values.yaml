@@ -1,0 +1,104 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Rootkeel server settings for one environment on Kubernetes. These are the settings of
+# server/example.env (named in brackets) as chart values; docs/helm.md walks through an install and
+# docs/configuration.md describes each setting. No credential ever goes in this file: the owner
+# credential and the database key are generated inside the cluster, on the state volume.
+
+# [RT_ENVIRONMENT] A short name for this server (lowercase letters, digits, hyphens; at most 30).
+# It labels machine credentials.
+environment: prod
+
+# [RT_PUBLIC_HOST] The hostname for the API, rt and browsers. The owner's terminal pages are served on
+# owner.<publicHost>.
+publicHost: term.example.com
+# [RT_RELAY_HOST] The hostname the agents' tunnel dials. Must differ from publicHost and
+# owner.<publicHost>. All three names point at the front door's external address.
+relayHost: term-relay.example.com
+# [RT_PUBLIC_PORT] The HTTPS port clients use for both hostnames. The front door's Service listens on it.
+publicPort: 443
+
+# [RT_HSTS_MAX_AGE] Strict-Transport-Security max-age in seconds (0..63072000). Start short while
+# hostnames may still change.
+hstsMaxAge: 31536000
+
+# [RT_GRANT_IDLE_TIMEOUT, RT_GRANT_MAX_LIFETIME] Session grants stay open until revoked. Optional
+# administrative time limits in seconds (0: none, otherwise at least 60): end a grant after this
+# long without terminal input, or this long after it was issued.
+grantIdleTimeout: 0
+grantMaxLifetime: 0
+
+# [RT_BROKER_IMAGE, RT_RELAY_IMAGE, RT_PROXY_IMAGE] Images, each pinned to one build: a version tag or
+# a digest, never a moving tag such as latest. Release images are not published yet: build the broker
+# and relay with `scripts/build-images.sh --push <your registry>/rootkeel <version>` and put the
+# printed references here.
+images:
+  broker: rootkeel-local/broker:0.1.0
+  relay: rootkeel-local/relay:0.1.0
+  proxy: nginx:1.30.1-alpine@sha256:c819f83c54b0361f5557601bf5eb4943d09360e7a7fdf426afc466570f45874d
+  pullPolicy: IfNotPresent
+  # Names of existing image pull Secrets, for a private registry.
+  pullSecrets: []
+# [RT_REQUIRE_IMAGE_DIGEST] true to accept only references pinned by digest.
+requireImageDigest: false
+
+# [RT_TLS_CERT_FILE, RT_TLS_KEY_FILE] The TLS certificate: a kubernetes.io/tls Secret in the release
+# namespace with tls.crt (full chain) and tls.key. It must cover publicHost, owner.<publicHost> and
+# relayHost. Empty secretName means <release name>-tls (or the chart's full name if overridden).
+tls:
+  secretName: ""
+  # Let cert-manager (installed separately) issue the certificate into that Secret instead.
+  certManager:
+    enabled: false
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+
+# [RT_HTTPS_BIND] How the front door is reached from outside. It terminates TLS itself, and both the
+# browsers' HTTPS and the machines' tunnel arrive on this one port.
+service:
+  # LoadBalancer (the default) gives the front door its own external address. NodePort suits a
+  # cluster without load balancers; with ClusterIP you expose the Service yourself.
+  type: LoadBalancer
+  # With NodePort: the node port to use (empty: Kubernetes picks one). Clients then use that port, so
+  # set publicPort to the same value unless something in front maps 443 to it.
+  nodePort: null
+  # Local keeps the client's address, which the broker uses for its per-client sign-in rate limit.
+  # Cluster spreads traffic over every node but hides the client's address.
+  externalTrafficPolicy: Local
+  loadBalancerIP: ""
+  loadBalancerSourceRanges: []
+  annotations: {}
+
+# [RT_STATE_DIR] The broker's private state: the owner credential, the database and its encryption
+# key, on one persistent volume. An init step writes the credential and the key on first start and
+# never replaces them.
+persistence:
+  # Use an existing PersistentVolumeClaim instead of creating one.
+  existingClaim: ""
+  # Empty uses the cluster's default storage class.
+  storageClass: ""
+  size: 1Gi
+  accessModes:
+    - ReadWriteOnce
+  # Keep the claim, and so the credential and the database, when the release is uninstalled.
+  keep: true
+
+# Number of front door replicas. The broker and the relay always run one replica each: the broker
+# keeps its state in SQLite and the relay holds every machine's tunnel.
+proxy:
+  replicas: 1
+  resources: {}
+broker:
+  resources: {}
+relay:
+  resources: {}
+
+podAnnotations: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Override the names of the chart's resources.
+nameOverride: ""
+fullnameOverride: ""

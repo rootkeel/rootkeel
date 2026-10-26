@@ -1,0 +1,13 @@
+version = 1
+
+[[annotations]]
+path = "**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "The Rootkeel Authors"
+SPDX-License-Identifier = "AGPL-3.0-only"
+
+[[annotations]]
+path = "notices/Zellij-MIT.txt"
+precedence = "override"
+SPDX-FileCopyrightText = "2020 Zellij contributors"
+SPDX-License-Identifier = "MIT"

@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Non-default values for CI's render check; not part of the packaged chart.
+ci/
+.git/
+*.swp
+*~

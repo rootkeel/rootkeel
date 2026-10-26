@@ -1,0 +1,59 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# One environment's server side: TLS front door, broker and relay. Every
+# environment-specific value comes from that environment's env file (see
+# example.env); run it through scripts/compose.sh, which validates the file and
+# names the Compose project rootkeel-<RT_ENVIRONMENT> so environments never
+# share networks, containers or state. Images are pulled by their pinned
+# reference, never built here.
+name: rootkeel
+networks:
+  edge: {}
+  backend:
+    internal: true
+services:
+  proxy:
+    image: ${RT_PROXY_IMAGE:?set RT_PROXY_IMAGE in the environment file}
+    restart: unless-stopped
+    environment:
+      RT_PUBLIC_HOST: ${RT_PUBLIC_HOST:?set RT_PUBLIC_HOST in the environment file}
+      RT_RELAY_HOST: ${RT_RELAY_HOST:?set RT_RELAY_HOST in the environment file}
+      RT_HSTS_MAX_AGE: ${RT_HSTS_MAX_AGE:-31536000}
+      NGINX_ENVSUBST_FILTER: ^RT_
+    ports:
+      - "${RT_HTTPS_BIND:?set RT_HTTPS_BIND in the environment file}:443"
+    volumes:
+      - ./config/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./config/site.conf.template:/etc/nginx/templates/rootkeel.conf.template:ro
+      - ${RT_TLS_CERT_FILE:-${RT_STATE_DIR:?set RT_STATE_DIR in the environment file}/certs/server.crt}:/etc/nginx/certs/server.crt:ro
+      - ${RT_TLS_KEY_FILE:-${RT_STATE_DIR}/certs/server.key}:/etc/nginx/certs/server.key:ro
+    networks: [edge, backend]
+  broker:
+    image: ${RT_BROKER_IMAGE:?set RT_BROKER_IMAGE in the environment file}
+    restart: unless-stopped
+    init: true
+    environment:
+      RT_ENVIRONMENT: ${RT_ENVIRONMENT:?set RT_ENVIRONMENT in the environment file}
+      RT_PUBLIC_HOST: ${RT_PUBLIC_HOST}
+      RT_PUBLIC_PORT: ${RT_PUBLIC_PORT:-443}
+      RT_RELAY_HOST: ${RT_RELAY_HOST}
+      RT_HSTS_MAX_AGE: ${RT_HSTS_MAX_AGE:-31536000}
+      RT_OWNER_FILE: /credentials/owner
+      RT_DB: /data/broker.sqlite
+      RT_DB_KEY_FILE: /credentials/db-key
+      RT_RELAY_VHOST_URL: http://relay:8080
+      # Only requests from this service may name the client in X-Forwarded-For (per-client rate limits).
+      RT_FRONT_DOOR_HOST: proxy
+      # Opt-in administrative time limits on session grants; 0 (the default) means none.
+      RT_GRANT_IDLE_TIMEOUT: ${RT_GRANT_IDLE_TIMEOUT:-0}
+      RT_GRANT_MAX_LIFETIME: ${RT_GRANT_MAX_LIFETIME:-0}
+    volumes:
+      - ${RT_STATE_DIR}/owner:/credentials/owner:ro
+      - ${RT_STATE_DIR}/db-key:/credentials/db-key:ro
+      - ${RT_STATE_DIR}/db:/data
+    networks: [backend]
+  relay:
+    image: ${RT_RELAY_IMAGE:?set RT_RELAY_IMAGE in the environment file}
+    restart: unless-stopped
+    volumes:
+      - ./config/frps.toml:/etc/rootkeel/frps.toml:ro
+    networks: [backend]

@@ -1,0 +1,37 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- include "rootkeel.validate" . }}
+{{- $fullname := include "rootkeel.fullname" . }}
+{{- /*
+The files under files/ are copies of server/config (CI checks they stay identical). Kubernetes needs
+two changes: Services have stable addresses, so nginx resolves its upstreams once at start instead of
+through Docker's embedded DNS server (127.0.0.11, absent here); and each Compose service name becomes
+this release's Service name.
+*/}}
+{{- $nginx := include "rootkeel.replace" (list (.Files.Get "files/nginx.conf") "    resolver 127.0.0.11 valid=5s ipv6=off;\n" "") }}
+{{- $site := .Files.Get "files/site.conf.template" }}
+{{- $site = include "rootkeel.replace" (list $site "set $relay relay:7000;\n        proxy_pass http://$relay;" (printf "proxy_pass http://%s-relay:7000;" $fullname)) }}
+{{- $site = include "rootkeel.replace" (list $site "set $broker broker:8080;\n        proxy_pass http://$broker;" (printf "proxy_pass http://%s-broker:8080;" $fullname)) }}
+{{- $frps := include "rootkeel.replace" (list (.Files.Get "files/frps.toml") "addr = \"broker:8081\"" (printf "addr = \"%s-broker:8081\"" $fullname)) }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-proxy
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+data:
+  nginx.conf: |
+    {{- $nginx | nindent 4 }}
+  rootkeel.conf.template: |
+    {{- $site | nindent 4 }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-relay
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+data:
+  frps.toml: |
+    {{- $frps | nindent 4 }}

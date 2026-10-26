@@ -1,0 +1,5 @@
+# The tool that builds the standalone rt executables attached to each release (release workflow).
+# rt itself needs only the Python standard library.
+# release.txt pins it and every dependency by version and SHA-256; regenerate it with
+#   uv pip compile --universal --python-version 3.13 --generate-hashes --no-header --annotation-style line release.in -o release.txt
+pyinstaller==6.22.3

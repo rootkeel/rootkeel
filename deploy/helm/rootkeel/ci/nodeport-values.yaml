@@ -1,0 +1,39 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# A non-default configuration for CI's render check: node ports, cert-manager, digest-pinned images
+# from a private registry, an existing state claim, sizing, scheduling and a name override.
+environment: lab
+publicHost: rootkeel.example.com
+relayHost: rootkeel-relay.example.com
+publicPort: 30443
+hstsMaxAge: 300
+grantIdleTimeout: 3600
+grantMaxLifetime: 86400
+requireImageDigest: true
+images:
+  broker: registry.example.com:5000/rootkeel/broker@sha256:1111111111111111111111111111111111111111111111111111111111111111
+  relay: registry.example.com:5000/rootkeel/relay:0.1.0@sha256:2222222222222222222222222222222222222222222222222222222222222222
+  proxy: nginx:1.30.1-alpine@sha256:c819f83c54b0361f5557601bf5eb4943d09360e7a7fdf426afc466570f45874d
+  pullPolicy: Always
+  pullSecrets: [registry-example]
+tls:
+  secretName: rootkeel-example-tls
+  certManager:
+    enabled: true
+    issuerRef:
+      name: example-issuer
+      kind: Issuer
+service:
+  type: NodePort
+  nodePort: 30443
+persistence:
+  existingClaim: rootkeel-state
+proxy:
+  replicas: 2
+  resources:
+    requests: {cpu: 50m, memory: 32Mi}
+broker:
+  resources:
+    requests: {cpu: 100m, memory: 128Mi}
+nodeSelector:
+  kubernetes.io/os: linux
+fullnameOverride: terminals

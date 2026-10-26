@@ -1,0 +1,26 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- $fullname := include "rootkeel.fullname" . -}}
+Rootkeel {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in namespace {{ .Release.Namespace }}.
+
+1. Point {{ .Values.publicHost }}, owner.{{ .Values.publicHost }} and {{ .Values.relayHost }} at the front door:
+{{- if eq .Values.service.type "LoadBalancer" }}
+     kubectl -n {{ .Release.Namespace }} get service {{ $fullname }}-proxy   # EXTERNAL-IP
+{{- else if eq .Values.service.type "NodePort" }}
+     any node's address; the port is in:
+     kubectl -n {{ .Release.Namespace }} get service {{ $fullname }}-proxy
+{{- else }}
+     the Service {{ $fullname }}-proxy is ClusterIP only: expose it yourself.
+{{- end }}
+
+2. The front door needs the TLS Secret {{ include "rootkeel.tlsSecret" . }} covering all three names
+{{- if .Values.tls.certManager.enabled }}; cert-manager issues it.{{ else }}.{{ end }}
+
+3. Read the owner credential for rt login:
+     kubectl -n {{ .Release.Namespace }} exec deploy/{{ $fullname }}-broker -c broker -- cat /state/owner
+
+4. On your computer:
+     rt login --url https://{{ .Values.publicHost }}{{ if ne (int .Values.publicPort) 443 }}:{{ .Values.publicPort | int64 }}{{ end }}
+
+docs/helm.md has the full walk-through.

@@ -1,0 +1,98 @@
+{{- /*
+SPDX-License-Identifier: AGPL-3.0-only
+*/ -}}
+{{- /*
+The Compose stack's private network, as policy: the broker and the relay talk only to each other and
+to the front door, and nothing else in the cluster reaches the broker's relay-policy listener (8081)
+or the relay. The front door accepts HTTPS from anywhere.
+*/}}
+{{- $dns := list (dict "protocol" "UDP" "port" 53) (dict "protocol" "TCP" "port" 53) }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "rootkeel.fullname" . }}-broker
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "rootkeel.selector" (list . "broker") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "proxy") | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "relay") | nindent 14 }}
+      ports:
+        - port: 8081
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "relay") | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+    - ports:
+        {{- toYaml $dns | nindent 8 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "rootkeel.fullname" . }}-relay
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "rootkeel.selector" (list . "relay") | nindent 6 }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "proxy") | nindent 14 }}
+      ports:
+        - port: 7000
+          protocol: TCP
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "broker") | nindent 14 }}
+      ports:
+        - port: 8080
+          protocol: TCP
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              {{- include "rootkeel.selector" (list . "broker") | nindent 14 }}
+      ports:
+        - port: 8081
+          protocol: TCP
+    - ports:
+        {{- toYaml $dns | nindent 8 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "rootkeel.fullname" . }}-proxy
+  labels:
+    {{- include "rootkeel.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "rootkeel.selector" (list . "proxy") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - port: 443
+          protocol: TCP

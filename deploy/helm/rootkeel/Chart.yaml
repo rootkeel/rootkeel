@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+apiVersion: v2
+name: rootkeel
+description: Self-hostable shared terminals. The Rootkeel server (TLS front door, broker and relay) for one owner.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.27.0-0"
+home: https://github.com/rootkeel/rootkeel
+sources:
+  - https://github.com/rootkeel/rootkeel
+keywords:
+  - terminal
+  - zellij
+  - remote-access

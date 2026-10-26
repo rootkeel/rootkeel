@@ -1,0 +1,6 @@
+# The broker image's Python dependencies.
+# broker.txt pins them and every dependency by version and SHA-256;
+# regenerate it for the image's Python 3.13 with
+#   uv pip compile --universal --python-version 3.13 --generate-hashes --no-header broker.in -o broker.txt
+aiohttp==3.14.5
+cryptography==50.0.2

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+bindAddr = "0.0.0.0"
+bindPort = 7000
+vhostHTTPPort = 8080
+vhostHTTPTimeout = 3600
+transport.tls.force = false
+transport.heartbeatTimeout = 10
+allowPorts = [{single = 1}]
+maxPortsPerClient = 1
+log.to = "console"
+log.level = "warn"
+# Compose service names below are private to one environment project.
+# Every control login, route registration, heartbeat and work connection is
+# checked against enrolled identity on a private broker listener.
+[[httpPlugins]]
+name = "machine-policy"
+addr = "broker:8081"
+path = "/_frp"
+ops = ["Login", "NewProxy", "Ping", "NewWorkConn"]

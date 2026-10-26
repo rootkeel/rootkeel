@@ -1,0 +1,308 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Publishes a release when a version tag (v1.2.3, or v1.2.3-rc.1 for a pre-release) is pushed on a
+# commit of main:
+#   - the broker and relay images for linux/amd64 and linux/arm64 at ghcr.io/<owner>/{broker,relay}:<version>,
+#     each with SBOM and provenance attestations (scripts/build-images.sh --push);
+#   - rt as a standalone executable for macOS (x86-64, Apple silicon) and Linux (x86-64, ARM64);
+#   - the agent bundle for Linux machines (x86-64 and ARM64), checked with the installer on clean
+#     Debian 13 and Ubuntu 24.04 on both architectures;
+#   - a GitHub release with notes, SHA256SUMS, and the images' SBOMs and provenance.
+# A pull request that changes the release machinery runs the same builds and checks as a dry run:
+# the images go to a registry inside the job, and nothing is published.
+# GitHub-hosted runners and GitHub-owned actions only. The default token is read-only: each job
+# asks for what it needs, and only the image and publish jobs can write.
+name: Release
+on:
+  push:
+    tags: ['v*']
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-images.sh
+      - scripts/build-rt.sh
+      - scripts/rt-ssl-hook.py
+      - scripts/release-notes.py
+      - scripts/lib/**
+      - requirements/release.txt
+      - images/**
+      - tests/e2e/install-check.sh
+permissions: {}
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # QEMU for building and checking ARM64 images on x86-64 runners.
+  BINFMT_IMAGE: tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+  # rt for Linux is built on Debian 12, so it runs on systems with that C library or newer.
+  RT_LINUX_BUILD_IMAGE: python:3.13.16-bookworm@sha256:dc02fc25f16160c36dee14de37869973422b2fa9e0096888328793c949c166df
+  DEBIAN_IMAGE: debian:13@sha256:4c25275446ca371766b8b093c696782eabce06263fccacb8d5d813b3dc44b308
+  UBUNTU_IMAGE: ubuntu:24.04@sha256:68ee22004a9109b44973313b02ff7b1de250f1de0f5ecb628d73f579aaff33ac
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      publish: ${{ steps.version.outputs.publish }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: version
+        env:
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] \
+              || { echo "::error::$GITHUB_REF_NAME is not a version tag such as v1.2.3 or v1.2.3-rc.1"; exit 1; }
+            git merge-base --is-ancestor "$GITHUB_SHA" origin/main \
+              || { echo "::error::$GITHUB_REF_NAME is not on main"; exit 1; }
+            version=${GITHUB_REF_NAME#v}
+            publish=true
+          else
+            version=0.0.0-dryrun.$PR_NUMBER.${GITHUB_SHA:0:12}
+            publish=false
+          fi
+          case $version in *-*) prerelease=true ;; *) prerelease=false ;; esac
+          { echo "version=$version"; echo "publish=$publish"; echo "prerelease=$prerelease"; } >> "$GITHUB_OUTPUT"
+          echo "Version $version; publish: $publish; pre-release: $prerelease"
+
+  images:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      # Pushing to ghcr.io on a version tag. A dry run never logs in.
+      packages: write
+    services:
+      # The dry run's registry, inside the job.
+      registry:
+        image: registry:2@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373
+        ports: ['127.0.0.1:5000:5000']
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PUBLISH: ${{ needs.version.outputs.publish }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Registry and builder
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            echo "PREFIX=ghcr.io/${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+            printf '%s\n' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          else
+            echo "PREFIX=localhost:5000/rootkeel" >> "$GITHUB_ENV"
+          fi
+          docker run --privileged --rm "$BINFMT_IMAGE" --install arm64
+          # build-images.sh's builder, on the host network so that it reaches the dry run's registry.
+          . scripts/lib/image-build.sh
+          docker buildx create --name rootkeel-attest --driver docker-container \
+            --driver-opt network=host --driver-opt "image=$BUILDKIT_IMAGE"
+      - name: Build and push
+        env:
+          RT_IMAGE_PLATFORMS: linux/amd64,linux/arm64
+        run: |
+          scripts/build-images.sh --push "$PREFIX" "$VERSION" | tee images.txt
+          mkdir -p release/evidence
+          cp images.txt release/
+          cp "$HOME/.cache/rootkeel/images/$VERSION"/*.spdx.json "$HOME/.cache/rootkeel/images/$VERSION"/*.provenance.json release/evidence/
+      - name: Check the pushed images
+        run: |
+          for name in broker relay; do
+            ref="$PREFIX/$name:$VERSION"
+            docker buildx imagetools inspect --builder rootkeel-attest --raw "$ref" | python3 -c '
+          import json, sys
+          platforms = {"%s/%s" % (m["platform"]["os"], m["platform"]["architecture"])
+                       for m in json.load(sys.stdin)["manifests"] if m["platform"]["os"] != "unknown"}
+          if platforms != {"linux/amd64", "linux/arm64"}:
+              sys.exit("%s has platforms %s" % (sys.argv[1], sorted(platforms)))' "$ref"
+            for platform in linux/amd64 linux/arm64; do
+              docker pull -q --platform "$platform" "$ref" >/dev/null
+              [ "$(docker image inspect -f '{{.Os}}/{{.Architecture}}' "$ref")" = "$platform" ]
+              [ "$(docker image inspect -f '{{.Config.User}}' "$ref")" = 65534:65534 ]
+              if [ "$name" = broker ]; then
+                docker run --rm --platform "$platform" --entrypoint python3 "$ref" -c 'import rootkeel.broker, rootkeel.admin'
+              else
+                docker run --rm --platform "$platform" --entrypoint /usr/local/bin/frps "$ref" --version
+              fi
+              echo "PASS $ref $platform"
+            done
+          done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: images
+          path: release/
+          if-no-files-found: error
+
+  rt:
+    needs: version
+    strategy:
+      matrix:
+        include:
+          - {platform: linux-x86_64, runner: ubuntu-latest, docker: linux/amd64}
+          - {platform: linux-arm64, runner: ubuntu-latest, docker: linux/arm64}
+          - {platform: macos-x86_64, runner: macos-15-intel}
+          - {platform: macos-arm64, runner: macos-15}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PLATFORM: ${{ matrix.platform }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build (Linux, in Debian 12)
+        if: matrix.docker
+        env:
+          DOCKER_PLATFORM: ${{ matrix.docker }}
+        run: |
+          if [ "$DOCKER_PLATFORM" != linux/amd64 ]; then docker run --privileged --rm "$BINFMT_IMAGE" --install arm64; fi
+          docker run --rm --platform "$DOCKER_PLATFORM" -v "$PWD:/src" -w /src "$RT_LINUX_BUILD_IMAGE" \
+            sh -c 'scripts/build-rt.sh "$1" "$2" dist && chown -R "$3" dist' \
+            sh "$VERSION" "$PLATFORM" "$(id -u):$(id -g)"
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        if: ${{ !matrix.docker }}
+        with:
+          python-version: "3.13"
+      - name: Build (macOS)
+        if: ${{ !matrix.docker }}
+        run: scripts/build-rt.sh "$VERSION" "$PLATFORM" dist
+      - name: Check
+        env:
+          DOCKER_PLATFORM: ${{ matrix.docker }}
+        run: |
+          mkdir check && tar -xzf "dist/rt-$VERSION-$PLATFORM.tar.gz" -C check
+          rt="rt-$VERSION-$PLATFORM/rt"
+          run() { if [ -n "$DOCKER_PLATFORM" ]; then docker run --rm -i --platform "$DOCKER_PLATFORM" -v "$PWD/check:/check:ro" -w /check "$DEBIAN_IMAGE" sh -c 'apt-get update -qq </dev/null >/dev/null && apt-get install -qq -y --no-install-recommends ca-certificates </dev/null >/dev/null && "$@"' sh "$@"; else (cd check && "$@"); fi; }
+          if [ "$PLATFORM" = macos-arm64 ]; then [ "$(lipo -archs "check/$rt")" = arm64 ]; fi
+          if [ "$PLATFORM" = macos-x86_64 ]; then [ "$(lipo -archs "check/$rt")" = x86_64 ]; fi
+          run "./$rt" --help | grep -q '^usage: rt '
+          # TLS with the system's trusted certificates: a public HTTPS server answers rt login (a refusal).
+          out=$(printf '%040d\n' 0 | run "./$rt" login --url https://github.com 2>&1 || true)
+          echo "$out"
+          case $out in *"refused (404)"*) ;; *) echo "::error::rt did not reach an HTTPS server"; exit 1 ;; esac
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rt-${{ matrix.platform }}
+          path: dist/rt-*.tar.gz
+          if-no-files-found: error
+
+  agent:
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Bundle
+        run: |
+          mkdir dist
+          git archive --format=tar.gz --prefix="rootkeel-agent-$VERSION/" -o "dist/rootkeel-agent-$VERSION-linux.tar.gz" \
+            HEAD agent rootkeel rt notices LICENSE THIRD_PARTY_NOTICES.md
+      - name: Install on clean Debian 13 and Ubuntu 24.04, x86-64 and ARM64
+        run: |
+          docker run --privileged --rm "$BINFMT_IMAGE" --install arm64
+          mkdir check && tar -xzf "dist/rootkeel-agent-$VERSION-linux.tar.gz" -C check
+          # A machine credential as rt enroll writes it, for a server the check never contacts.
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 -subj /CN=check -keyout /dev/null -out ca.crt 2>/dev/null
+          printf '{"id": "m_%s", "credential": "%s", "relay_host": "term-relay.example.com", "domain": "m_check", "ca_file": "/ca/ca.crt"}\n' \
+            "$(openssl rand -hex 12)" "$(openssl rand -hex 32)" > machine.json
+          status=0
+          # One platform at a time: Docker's image store keeps one platform of a digest reference.
+          for platform in linux/amd64 linux/arm64; do
+            docker image rm "$DEBIAN_IMAGE" "$UBUNTU_IMAGE" >/dev/null 2>&1 || true
+            pids=()
+            for image in "$DEBIAN_IMAGE" "$UBUNTU_IMAGE"; do
+              docker pull -q --platform "$platform" "$image" >/dev/null
+              log="install-${platform#linux/}-${image%%:*}.log"
+              docker run --rm --pull never --platform "$platform" -v "$PWD/check/rootkeel-agent-$VERSION:/src:ro" \
+                -v "$PWD/tests/e2e/install-check.sh:/install-check.sh:ro" -v "$PWD/machine.json:/machine.json:ro" \
+                -v "$PWD/ca.crt:/ca/ca.crt:ro" "$image" bash /install-check.sh check --no-connect > "$log" 2>&1 &
+              pids+=("$!:$log")
+            done
+            for entry in "${pids[@]}"; do
+              wait "${entry%%:*}" || { status=1; echo "::error::install check failed: ${entry#*:}"; }
+              echo "== ${entry#*:}"; cat "${entry#*:}"
+            done
+          done
+          exit "$status"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent
+          path: dist/
+          if-no-files-found: error
+
+  assemble:
+    needs: [version, images, rt, agent]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: artifacts
+      - name: Assets, checksums and notes
+        run: |
+          mkdir -p release/assets
+          cp artifacts/rt-*/rt-*.tar.gz artifacts/agent/*.tar.gz release/assets/
+          tar -C artifacts/images/evidence -czf "release/assets/rootkeel-$VERSION-images-sbom-provenance.tar.gz" .
+          (cd release/assets && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+          python3 scripts/release-notes.py "$VERSION" artifacts/images/images.txt release/assets > release/notes.md
+          cat release/notes.md
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: release/
+          if-no-files-found: error
+
+  publish:
+    needs: [version, assemble]
+    if: needs.version.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      # Creating the release and uploading its assets.
+      contents: write
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      PRERELEASE: ${{ needs.version.outputs.prerelease }}
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: release
+      - name: Create the release
+        run: |
+          # The changes since the previous release, after the notes on what to download.
+          gh api "repos/$GH_REPO/releases/generate-notes" -f tag_name="$GITHUB_REF_NAME" --jq .body > changes.md
+          { cat release/notes.md; echo; cat changes.md; } > notes.md
+          flags=()
+          if [ "$PRERELEASE" = true ]; then flags+=(--prerelease); fi
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "Rootkeel $VERSION" --notes-file notes.md \
+            "${flags[@]}" release/assets/*
