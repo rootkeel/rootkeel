@@ -9,7 +9,7 @@ literal `KEY=VALUE` lines; `$` interpolation is refused, and Compose sees only t
 file, never same-named shell variables.
 
 On Kubernetes the Helm chart takes the same settings as chart values;
-[helm.md](helm.md#2-write-your-values) maps each one to its value.
+[helm.md](helm.md#5-write-your-values) maps each one to its value.
 
 | Setting | Required | Meaning |
 |---|---|---|
@@ -19,7 +19,7 @@ On Kubernetes the Helm chart takes the same settings as chart values;
 | `RT_PUBLIC_PORT` | no | The HTTPS port clients use for both names. Default 443. |
 | `RT_HTTPS_BIND` | yes | The `address:port` the front door binds on this host, for example `0.0.0.0:443`. |
 | `RT_STATE_DIR` | yes | Absolute path of the server's private state, outside the checkout. |
-| `RT_TLS_CERT_FILE`, `RT_TLS_KEY_FILE` | no | Absolute paths of the certificate chain and key. Default `<state>/certs/server.crt` and `server.key`. The certificate must cover `RT_PUBLIC_HOST`, `owner.RT_PUBLIC_HOST` and `RT_RELAY_HOST`. |
+| `RT_TLS_CERT_FILE`, `RT_TLS_KEY_FILE` | no | Absolute paths of the certificate's full chain (PEM, the certificate first) and of its unencrypted key. Default `<state>/certs/server.crt` and `server.key`. The certificate must cover `RT_PUBLIC_HOST`, `owner.RT_PUBLIC_HOST` and `RT_RELAY_HOST`. Symbolic links, such as certbot's `live/` paths, are followed when the front door starts. |
 | `RT_HSTS_MAX_AGE` | no | Strict-Transport-Security max-age in seconds, 0 to 63072000. Default 31536000. |
 | `RT_GRANT_IDLE_TIMEOUT` | no | End a grant this many seconds after its last terminal input. 0 (the default) means never; otherwise at least 60. |
 | `RT_GRANT_MAX_LIFETIME` | no | End a grant this many seconds after it was issued. 0 (the default) means never; otherwise at least 60. |
@@ -39,6 +39,7 @@ including grants issued before the limit was set.
 | `db-key` | The 32-byte database encryption key (mode 0600). Kept outside `db/`. |
 | `db/` | The broker's SQLite database. |
 | `certs/` | The default certificate location, and the lab CA from `prepare.sh --lab-ca`. |
+| `docker-config/` | The Compose and Buildx plugins `compose.sh` fetched, when the host lacks them. |
 
 ## The broker process
 
