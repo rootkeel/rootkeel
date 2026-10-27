@@ -34,8 +34,10 @@ class EnvFileTests(unittest.TestCase):
         settings = config.env_file(values)
         self.assertEqual(settings["origin"], "https://term.example.com")
         self.assertEqual(settings["relay_host"], "term-relay.example.com")
-        # Release images by version tag; the front door by digest.
-        self.assertIn("@sha256:", values["RT_PROXY_IMAGE"])
+        # Every image is pinned by digest, and the example requires it.
+        self.assertEqual(values["RT_REQUIRE_IMAGE_DIGEST"], "true")
+        for key in ("RT_BROKER_IMAGE", "RT_RELAY_IMAGE", "RT_PROXY_IMAGE"):
+            self.assertIn("@sha256:", values[key])
 
     def test_non_default_values_and_derived_origin(self):
         settings = config.env_file(VALID | {"RT_PUBLIC_PORT": "8443"})
