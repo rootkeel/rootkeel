@@ -28,18 +28,18 @@ grantIdleTimeout: 0
 grantMaxLifetime: 0
 
 # [RT_BROKER_IMAGE, RT_RELAY_IMAGE, RT_PROXY_IMAGE] Images, each pinned to one build: a version tag or
-# a digest, never a moving tag such as latest. Use the digests of ghcr.io/rootkeel/broker and
-# ghcr.io/rootkeel/relay that the release's notes print, or build the broker and relay with
-# `scripts/build-images.sh --push <your registry>/rootkeel <version>` and put the printed references here.
+# a digest, never a moving tag such as latest. The broker and relay below are the published 0.1.0
+# images; for another release, copy the two digests under "Server images" in its release notes. To
+# build the images yourself instead, see "Building the images yourself" in docs/helm.md.
 images:
-  broker: rootkeel-local/broker:0.1.0
-  relay: rootkeel-local/relay:0.1.0
+  broker: ghcr.io/rootkeel/broker@sha256:e901ad1ef899ff14f4d2f2d960232425e2af834976c6013a45829d0fe9bd4efb
+  relay: ghcr.io/rootkeel/relay@sha256:7043f2d96ab4bdcf92b7a76168fcddb99741eaa679402bb3e0e8c86789f268ee
   proxy: nginx:1.30.1-alpine@sha256:c819f83c54b0361f5557601bf5eb4943d09360e7a7fdf426afc466570f45874d
   pullPolicy: IfNotPresent
   # Names of existing image pull Secrets, for a private registry.
   pullSecrets: []
 # [RT_REQUIRE_IMAGE_DIGEST] true to accept only references pinned by digest.
-requireImageDigest: false
+requireImageDigest: true
 
 # [RT_TLS_CERT_FILE, RT_TLS_KEY_FILE] The TLS certificate: a kubernetes.io/tls Secret in the release
 # namespace with tls.crt (full chain) and tls.key. It must cover publicHost, owner.<publicHost> and
