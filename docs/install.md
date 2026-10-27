@@ -287,9 +287,10 @@ broker and relay **on the server**, from `/opt/rootkeel-server`:
 sudo scripts/build-images.sh rootkeel-local 0.1.0
 ```
 
-It prints one line per image, for example `rootkeel-local/broker:0.1.0 sha256:…`. These are the
-references `server/example.env` already names: keep `RT_BROKER_IMAGE=rootkeel-local/broker:0.1.0`,
-`RT_RELAY_IMAGE=rootkeel-local/relay:0.1.0` and `RT_REQUIRE_IMAGE_DIGEST=false`. The images stay in
+It prints one line per image, for example `rootkeel-local/broker:0.1.0 sha256:…`. In
+`/etc/rootkeel/rootkeel.env`, replace the published images with these local ones:
+`RT_BROKER_IMAGE=rootkeel-local/broker:0.1.0`, `RT_RELAY_IMAGE=rootkeel-local/relay:0.1.0` and
+`RT_REQUIRE_IMAGE_DIGEST=false` (local images are pinned by version tag). The images stay in
 the server's local Docker image store. A version tag can be built only once; use a new one, such as
 `0.2.0`, for each later build. To build elsewhere and push to
 your own registry, run `scripts/build-images.sh --push registry.example.com/rootkeel <version>` and
