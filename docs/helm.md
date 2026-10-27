@@ -1,80 +1,92 @@
 # Install on Kubernetes with Helm
 
 This guide runs one Rootkeel server on a Kubernetes cluster with the Helm chart in
-[`deploy/helm/rootkeel`](../deploy/helm/rootkeel), signs `rt` in, and shares a first Linux machine.
-The chart runs the same three components as the Compose stack (the nginx front door, the broker and
-the relay) from the same images and configuration; only the way it is installed differs. The steps
-after the server is running are the same as in [install.md](install.md).
+[`deploy/helm/rootkeel`](../deploy/helm/rootkeel). The chart runs the same three components as the
+Compose stack (the nginx front door, the broker and the relay) from the same images and
+configuration; only the way they are installed differs. Once the server answers, you install `rt`,
+sign in and share machines exactly as in [install.md](install.md), from
+[step 9](install.md#9-install-rt-on-your-computer) on.
 
-## What you need
+Read the introduction of [install.md](install.md#how-the-pieces-fit) first if you are new to
+Rootkeel: it explains the roles of the server, your computer and the machines to share. Here,
+**your workstation** is the computer that runs `kubectl` and `helm` against the cluster; it can be
+the same as your computer. This guide uses the same example values as install.md
+(`term.example.com`, `owner.term.example.com`, `term-relay.example.com`), a namespace `rootkeel`
+and a Helm release named `rootkeel`.
 
-| Where | What |
-|---|---|
-| Cluster | Kubernetes 1.27 or later, with a default storage class (or a PersistentVolumeClaim you create) and a way to expose a Service: a load balancer or node ports. A network plugin that enforces NetworkPolicy (most do); see [Network policy](#network-policy). |
-| Your workstation | `kubectl` and Helm 3, with access to the cluster; a checkout of the release you run. |
-| Registry | One the cluster can pull from, for the broker and relay images until release images are published. |
-| DNS | Three names pointing at the front door's external address, for example `term.example.com`, `owner.term.example.com` and `term-relay.example.com`. |
-| Certificate | One TLS certificate covering all three names, as a Kubernetes TLS Secret, or issued by [cert-manager](https://cert-manager.io). |
-| Machines and your computer | As in [install.md](install.md#what-you-need). |
+## 1. Check the prerequisites
 
-## 1. Build and push the images
+**On your workstation**:
 
-Release images are not published yet. Build the broker and relay from the checkout and push them to
-your registry:
+| Need | Check with | Expect |
+|---|---|---|
+| `kubectl`, configured for the cluster | `kubectl version` | A `Client Version` and a `Server Version` line, no error |
+| Kubernetes 1.27 or later (the chart refuses older clusters) | the `Server Version` above | `v1.27.0` or later |
+| Helm 3 | `helm version --short` | `v3.…` |
+| Git | `git --version` | `git version 2.…` |
+| A default storage class, for the 1 GiB state volume | `kubectl get storageclass` | One class marked `(default)`, or plan to set `persistence.storageClass` or `persistence.existingClaim` |
+| A way to expose a Service to the Internet: a load balancer (most clouds) or reachable node ports | your cluster's documentation | |
+| A network plugin that enforces NetworkPolicy | your cluster's documentation | See [Network policy](#network-policy) |
+| Namespaces may run Pod Security level `baseline` (the front door's nginx master process starts as root) | `kubectl get ns rootkeel --show-labels` after step 3 | No `pod-security.kubernetes.io/enforce=restricted` label |
+
+You also need the DNS zone for your hostnames and, for the certificate, either a certificate you
+can obtain yourself or [cert-manager](https://cert-manager.io) in the cluster with a DNS-01 issuer.
+
+## 2. Get the chart
+
+The chart is in the repository, not in a chart registry. **On your workstation**, clone the
+repository and check out the release you install:
 
 ```sh
-git clone https://github.com/rootkeel/rootkeel.git && cd rootkeel
-git checkout v0.1.0            # the release you run
-scripts/build-images.sh --push registry.example.com/rootkeel 0.1.0-local-$(git rev-parse --short=12 HEAD)
+git clone https://github.com/rootkeel/rootkeel.git
+cd rootkeel
+git checkout v0.1.0
 ```
 
-It prints the two image references; use them below. A private registry needs an image pull Secret
-in the namespace, named in `images.pullSecrets`.
+All remaining commands run from this directory.
 
-## 2. Write your values
-
-Every setting of the Compose environment file has a chart value. Start from the defaults in
-[`values.yaml`](../deploy/helm/rootkeel/values.yaml) and write only what you change, for example to
-`rootkeel-values.yaml`:
-
-```yaml
-environment: prod
-publicHost: term.example.com
-relayHost: term-relay.example.com
-images:
-  broker: registry.example.com/rootkeel/broker:0.1.0-local-0123456789ab
-  relay: registry.example.com/rootkeel/relay:0.1.0-local-0123456789ab
-```
-
-| Environment file | Chart value | Notes |
-|---|---|---|
-| `RT_ENVIRONMENT` | `environment` | |
-| `RT_PUBLIC_HOST`, `RT_RELAY_HOST` | `publicHost`, `relayHost` | |
-| `RT_PUBLIC_PORT` | `publicPort` | Also the port of the front door's Service. |
-| `RT_HTTPS_BIND` | `service` | How the front door is reached; see step 4. |
-| `RT_STATE_DIR` | `persistence` | A PersistentVolumeClaim instead of a host directory. |
-| `RT_TLS_CERT_FILE`, `RT_TLS_KEY_FILE` | `tls.secretName` | A Kubernetes TLS Secret, or `tls.certManager`. |
-| `RT_HSTS_MAX_AGE` | `hstsMaxAge` | |
-| `RT_GRANT_IDLE_TIMEOUT`, `RT_GRANT_MAX_LIFETIME` | `grantIdleTimeout`, `grantMaxLifetime` | |
-| `RT_BROKER_IMAGE`, `RT_RELAY_IMAGE`, `RT_PROXY_IMAGE` | `images.broker`, `images.relay`, `images.proxy` | Keep `images.proxy` as the release pins it. |
-| `RT_REQUIRE_IMAGE_DIGEST` | `requireImageDigest` | |
-
-The chart checks values with the same rules as `rootkeel.config check-env`: a bad hostname, a moving
-image tag or an out-of-range limit fails `helm install` with a message naming the value. No value
-holds a credential.
-
-## 3. The certificate
-
-Create a TLS Secret holding the full certificate chain and its key, in the namespace you install
-into. Its default name is `<release>-tls` (`rootkeel-tls` for a release named `rootkeel`); set
-`tls.secretName` to use another:
+## 3. Create the namespace
 
 ```sh
 kubectl create namespace rootkeel
+```
+
+prints `namespace/rootkeel created`. If your cluster enforces Pod Security level `restricted` on new
+namespaces by default, allow `baseline` for this one:
+
+```sh
+kubectl label namespace rootkeel pod-security.kubernetes.io/enforce=baseline --overwrite
+```
+
+## 4. Provide the TLS certificate
+
+The front door terminates TLS itself and needs one certificate covering all three names:
+`term.example.com`, `owner.term.example.com` and `term-relay.example.com`. It reads it from a
+Kubernetes TLS Secret, by default named `<release>-tls`: `rootkeel-tls` here. Set
+`tls.secretName` in step 5 to use another name. The front door pods wait (in `ContainerCreating`)
+until the Secret exists.
+
+### Option A: a certificate you have
+
+With the full chain in `fullchain.pem` (your certificate first, then the intermediates) and its
+unencrypted key in `privkey.pem`, for example from certbot as in
+[install.md, step 5](install.md#5-get-a-tls-certificate) or from your certificate authority:
+
+```sh
 kubectl -n rootkeel create secret tls rootkeel-tls --cert=fullchain.pem --key=privkey.pem
 ```
 
-Or let cert-manager issue it: with an issuer already set up in the cluster, add
+prints `secret/rootkeel-tls created`. To renew, replace the Secret and restart the front door:
+
+```sh
+kubectl -n rootkeel create secret tls rootkeel-tls --cert=fullchain.pem --key=privkey.pem \
+  --dry-run=client -o yaml | kubectl apply -f -
+kubectl -n rootkeel rollout restart deploy/rootkeel-proxy
+```
+
+### Option B: cert-manager
+
+With cert-manager installed and an issuer already set up, add this to your values in step 5:
 
 ```yaml
 tls:
@@ -85,49 +97,147 @@ tls:
       kind: ClusterIssuer
 ```
 
-and the chart creates a Certificate for the three names. The front door starts once the Secret
-exists. An HTTP-01 challenge needs the three names to reach a solver over port 80, which the front
-door does not serve; use a DNS-01 issuer.
+The chart then creates a Certificate for the three names, and cert-manager writes the Secret. Use
+a DNS-01 issuer: an HTTP-01 challenge needs the names to reach a solver over port 80, which the
+front door does not serve. After each renewal, restart the front door (`kubectl -n rootkeel rollout
+restart deploy/rootkeel-proxy`): it reads the certificate only when it starts.
 
-## 4. Choose how the front door is reached
+### Check the Secret
 
-The front door terminates TLS itself, and both the browsers' HTTPS and the machines' tunnel arrive
-on its one port, so exactly one port has to be reachable from the Internet.
+```sh
+kubectl -n rootkeel get secret rootkeel-tls -o jsonpath='{.data.tls\.crt}' | base64 -d \
+  | openssl x509 -noout -ext subjectAltName -enddate
+```
 
-- **LoadBalancer (the default).** The Service `<release>-proxy` gets its own external address on
-  port `publicPort` (443). `service.externalTrafficPolicy: Local` (the default) keeps the client's
-  address, which the broker uses for its per-client sign-in rate limit. Set
+The output lists all three names and the expiry date.
+
+## 5. Write your values
+
+Every setting of the Compose settings file has a chart value. Write only what you change, to a
+file on your workstation such as `rootkeel-values.yaml`:
+
+```yaml
+environment: prod
+publicHost: term.example.com
+relayHost: term-relay.example.com
+requireImageDigest: true
+images:
+  broker: ghcr.io/rootkeel/broker@sha256:e901ad1ef899ff14f4d2f2d960232425e2af834976c6013a45829d0fe9bd4efb
+  relay: ghcr.io/rootkeel/relay@sha256:7043f2d96ab4bdcf92b7a76168fcddb99741eaa679402bb3e0e8c86789f268ee
+```
+
+The two image digests are those of release 0.1.0; each release prints its own under "Server
+images" in its notes on the [releases page](https://github.com/rootkeel/rootkeel/releases). The
+images are public, so no pull Secret is needed. The defaults for everything else are in
+[`values.yaml`](../deploy/helm/rootkeel/values.yaml). No value holds a credential: the owner
+credential and the database key are generated inside the cluster, on the state volume.
+
+| Settings file | Chart value | Notes |
+|---|---|---|
+| `RT_ENVIRONMENT` | `environment` | |
+| `RT_PUBLIC_HOST`, `RT_RELAY_HOST` | `publicHost`, `relayHost` | |
+| `RT_PUBLIC_PORT` | `publicPort` | Also the port of the front door's Service. Default 443. |
+| `RT_HTTPS_BIND` | `service` | How the front door is reached; see step 6. |
+| `RT_STATE_DIR` | `persistence` | A PersistentVolumeClaim instead of a host directory. |
+| `RT_TLS_CERT_FILE`, `RT_TLS_KEY_FILE` | `tls.secretName` | A Kubernetes TLS Secret, or `tls.certManager`. |
+| `RT_HSTS_MAX_AGE` | `hstsMaxAge` | |
+| `RT_GRANT_IDLE_TIMEOUT`, `RT_GRANT_MAX_LIFETIME` | `grantIdleTimeout`, `grantMaxLifetime` | |
+| `RT_BROKER_IMAGE`, `RT_RELAY_IMAGE`, `RT_PROXY_IMAGE` | `images.broker`, `images.relay`, `images.proxy` | Keep `images.proxy` as the release pins it. |
+| `RT_REQUIRE_IMAGE_DIGEST` | `requireImageDigest` | |
+
+The chart checks values with the same rules as `rootkeel.config check-env`: a bad hostname, a moving
+image tag or an out-of-range limit fails `helm install` with a message naming the value. To see
+the result without installing, run
+`helm template rootkeel deploy/helm/rootkeel -n rootkeel -f rootkeel-values.yaml`.
+
+### Building the images yourself
+
+For a commit that is not a release, build the broker and relay from the checkout and push them to
+a registry the cluster can pull from (this needs Docker on your workstation):
+
+```sh
+scripts/build-images.sh --push registry.example.com/rootkeel 0.1.0-local-$(git rev-parse --short=12 HEAD)
+```
+
+It prints the two image references with their digests; put those into `images.broker` and
+`images.relay`. A private registry needs an image pull Secret in the namespace, named in
+`images.pullSecrets`.
+
+## 6. Choose how the front door is reached
+
+Browsers' HTTPS and the machines' tunnel both arrive on the front door's one port, so exactly one
+TCP port has to be reachable from the Internet.
+
+- **LoadBalancer (the default).** The Service `rootkeel-proxy` gets its own external address on
+  TCP port `publicPort` (443). `service.externalTrafficPolicy: Local` (the default) keeps the
+  client's address, which the broker uses for its per-client sign-in rate limit. Set
   `service.annotations`, `service.loadBalancerIP` or `service.loadBalancerSourceRanges` as your
-  cloud requires.
-- **NodePort.** Set `service.type: NodePort` and, optionally, `service.nodePort`. Clients then use
-  that port: set `publicPort` to the same value, unless something in front of the nodes maps 443
-  to it.
-- **ClusterIP.** Set `service.type: ClusterIP` to expose the Service `<release>-proxy` yourself.
+  cloud requires. Make sure the cloud firewall allows inbound TCP 443 to the load balancer.
+- **NodePort.** Set `service.type: NodePort` and, optionally, `service.nodePort` (for example
+  `30443`). Clients then use that port: set `publicPort` to the same value, unless something in
+  front of the nodes maps 443 to it. Open that TCP port on the nodes' firewall.
+- **ClusterIP.** Set `service.type: ClusterIP` and expose the Service `rootkeel-proxy` yourself.
+  Whatever you put in front must pass TLS through untouched (no TLS termination), on TCP.
 
-## 5. Install
+## 7. Install
+
+**On your workstation**:
 
 ```sh
 helm install rootkeel deploy/helm/rootkeel -n rootkeel -f rootkeel-values.yaml
+```
+
+It prints `STATUS: deployed` and notes with the next steps. Wait for the pods:
+
+```sh
+for name in broker relay proxy; do kubectl -n rootkeel rollout status deploy/rootkeel-$name; done
 kubectl -n rootkeel get pods
 ```
 
-On first start an init step of the broker writes the owner credential and the database encryption
-key to the state volume, as `scripts/prepare.sh` does for Compose. It never replaces them, so
-upgrades and restarts keep them. Read the owner credential for `rt login`:
+Each of the three lines ends with `successfully rolled out`, and every pod shows `1/1` `Running`.
+On its first start, an init step of the broker writes the owner credential and the database
+encryption key to the state volume, as `scripts/prepare.sh` does for Compose; it never replaces
+them, so upgrades and restarts keep them. A pod that stays `Pending` or `ContainerCreating` is
+covered in [Troubleshooting](#troubleshooting).
+
+## 8. Point DNS at the front door and check it
+
+Find the front door's external address:
 
 ```sh
-kubectl -n rootkeel exec deploy/rootkeel-broker -c broker -- cat /state/owner
+kubectl -n rootkeel get service rootkeel-proxy
 ```
 
-Point the three DNS names at the front door's address (`kubectl -n rootkeel get service
-rootkeel-proxy`), then check it:
+With a load balancer, the `EXTERNAL-IP` column shows an IP address or a hostname (it says
+`<pending>` for a minute or two while the cloud creates it). Create three DNS records:
+
+| Record name | If `EXTERNAL-IP` is an IP address | If it is a hostname |
+|---|---|---|
+| `term.example.com` | `A` record to that address | `CNAME` record to that hostname |
+| `owner.term.example.com` | `A` record to that address | `CNAME` record to that hostname |
+| `term-relay.example.com` | `A` record to that address | `CNAME` record to that hostname |
+
+With node ports, point the records at a node's public address (or at whatever you put in front).
+Check the records and the server **from your computer** as in
+[install.md, step 2](install.md#2-create-the-dns-records) and
+[step 8](install.md#check-that-it-is-healthy):
 
 ```sh
 curl -sS https://term.example.com/ | grep -o '<title>.*</title>'
 ```
 
-Then continue with [install.md, step 3](install.md#3-sign-rt-in): sign `rt` in, enroll a machine
-and open a terminal.
+prints `<title>Rootkeel sign-in</title>` (add `:<publicPort>` to the URL when it is not 443).
+
+## 9. Read the owner credential
+
+```sh
+kubectl -n rootkeel exec deploy/rootkeel-broker -c broker -- cat /state/owner
+```
+
+prints 64 hexadecimal characters: the owner credential for `rt login`.
+
+Then continue with [install.md, step 9](install.md#9-install-rt-on-your-computer): install `rt`,
+sign in with this credential, share a machine and open a terminal.
 
 ## What the chart creates
 
@@ -171,6 +281,9 @@ kubectl -n rootkeel exec deploy/rootkeel-broker -c broker -- python3 -m rootkeel
 kubectl -n rootkeel exec deploy/rootkeel-broker -c broker -- python3 -m rootkeel.admin revoke --all
 ```
 
+- **Stopping and starting.** Scale the three Deployments to zero and back:
+  `kubectl -n rootkeel scale deploy/rootkeel-proxy deploy/rootkeel-broker deploy/rootkeel-relay --replicas=0`,
+  then `--replicas=1` (or your `proxy.replicas`). The state volume stays.
 - **Rotating the owner credential.** Write a new one in place and restart the broker:
 
   ```sh
@@ -193,9 +306,31 @@ kubectl -n rootkeel exec deploy/rootkeel-broker -c broker -- python3 -m rootkeel
 - **Certificates.** The front door reads the certificate when it starts. After the Secret is
   renewed, by you or by cert-manager, restart it: `kubectl -n rootkeel rollout restart
   deploy/rootkeel-proxy`.
-- **Upgrades.** Build and push the new release's images under a new version tag, set them in your
-  values and run `helm upgrade rootkeel deploy/helm/rootkeel -n rootkeel -f rootkeel-values.yaml`
-  from the new checkout. Update `rt` and the agents as in [operations.md](operations.md#upgrades).
+- **Upgrades.** Read the release notes, back up, then check out the new release in your clone
+  (`git fetch --tags && git checkout v0.2.0`), set `images.broker` and `images.relay` to its image
+  digests and `images.proxy` to its `values.yaml` default if you overrode it, and run
+  `helm upgrade rootkeel deploy/helm/rootkeel -n rootkeel -f rootkeel-values.yaml`. Update `rt` and
+  the agents as in [install.md](install.md#upgrade).
 - **Uninstalling.** `helm uninstall rootkeel -n rootkeel` keeps the state claim; delete it with
   `kubectl -n rootkeel delete pvc rootkeel-state` once you no longer need the credential and the
-  database.
+  database, then `kubectl delete namespace rootkeel` and remove the three DNS records.
+
+## Troubleshooting
+
+- **`helm install` fails with `Error: execution error at …`** naming a value, for example
+  `relayHost must differ from publicHost`: fix that value. `chart requires kubeVersion: >=1.27.0-0`
+  means the cluster is too old.
+- **The proxy pods stay `ContainerCreating`.** `kubectl -n rootkeel describe pod -l
+  app.kubernetes.io/component=proxy` shows `secret "rootkeel-tls" not found`: create the Secret
+  (step 4), or check that `tls.secretName` matches its name. With cert-manager,
+  `kubectl -n rootkeel describe certificate rootkeel` shows why it is not issued yet.
+- **The broker pod stays `Pending`.** `kubectl -n rootkeel get pvc` shows `rootkeel-state` as
+  `Pending`: the cluster has no default storage class. Set `persistence.storageClass` or
+  `persistence.existingClaim` and run `helm upgrade` with the same values.
+- **Pods are refused** with `violates PodSecurity "restricted"`: allow `baseline` on the namespace
+  (step 3).
+- **`EXTERNAL-IP` stays `<pending>`.** The cluster has no load balancer: use `service.type:
+  NodePort` (step 6).
+- **DNS, certificate, port or credential problems** look the same as with Compose; see
+  [install.md, Troubleshooting](install.md#troubleshooting), using
+  `kubectl -n rootkeel logs deploy/rootkeel-proxy` in place of the Compose logs.

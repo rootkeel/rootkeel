@@ -34,39 +34,58 @@ HTTPS; nothing on them listens on the network.
 
 ## Quick start
 
-You need a Linux server with a public IP address and Docker, three DNS names pointing at it, and a
-TLS certificate covering them. The full walk-through is in [docs/install.md](docs/install.md); to
+This is the short version for readers who have run servers before. The full step-by-step guide,
+with prerequisites, expected output and troubleshooting, is [docs/install.md](docs/install.md); to
 run the server on Kubernetes instead, see [docs/helm.md](docs/helm.md).
 
+Before you start you need:
+
+- a Linux server (x86-64 or ARM64) with a public IPv4 address, Docker, Git, Python 3 and OpenSSL,
+  with inbound TCP port 443 open;
+- three DNS `A` records pointing at it, for example `term.example.com`, `owner.term.example.com`
+  (always `owner.` followed by the first name) and `term-relay.example.com`;
+- one TLS certificate covering all three names, as a full-chain PEM file and an unencrypted key
+  file, for example from Let's Encrypt.
+
+**On the server:**
+
 ```sh
-# On the server
-git clone https://github.com/rootkeel/rootkeel.git && cd rootkeel
-sudo install -D -m 600 server/example.env /etc/rootkeel/rootkeel.env   # then edit it
-# Images: use the release's ghcr.io/rootkeel/{broker,relay} references when its notes list them,
-# otherwise build them here (the example file names these):
-scripts/build-images.sh rootkeel-local 0.1.0
+sudo git clone https://github.com/rootkeel/rootkeel.git /opt/rootkeel-server && cd /opt/rootkeel-server
+sudo git checkout v0.1.0                    # the release you run
+sudo install -D -m 600 server/example.env /etc/rootkeel/rootkeel.env
+sudoedit /etc/rootkeel/rootkeel.env         # hostnames, certificate paths, and the release's image digests
 sudo scripts/prepare.sh /etc/rootkeel/rootkeel.env
 sudo scripts/compose.sh /etc/rootkeel/rootkeel.env up -d
-sudo cat /srv/rootkeel/prod/owner          # the owner credential, for rt login
+sudo cat /srv/rootkeel/prod/owner           # the owner credential, for rt login
+```
 
-# On your computer (macOS or Linux; Windows through WSL): the release's standalone rt download,
-# or the Python 3 file from a checkout of the same release
-install -m 755 rt ~/.local/bin/rt
-rt login --url https://term.example.com    # paste the owner credential once
-rt enrollment --name laptop                # prints a one-use enrollment code
-rt enroll machine.json                     # enter the code; writes the machine credential
+**On your computer** (macOS or Linux; Windows through WSL), with `rt` from the release's downloads
+installed as `~/.local/bin/rt` ([docs/install.md, step 9](docs/install.md#9-install-rt-on-your-computer)):
 
-# On the Linux machine to share (Debian 13 or Ubuntu 24.04), from a checkout of the same release
-sudo agent/install.sh "$USER" machine.json
+```sh
+rt login --url https://term.example.com     # paste the owner credential once
+rt enrollment --name devbox                 # prints a one-use enrollment code
+rt enroll machine.json                      # enter the code; writes the machine credential
+scp machine.json alice@devbox:              # copy it privately to the machine to share
+```
 
-# From anywhere
-rt attach main                             # in a terminal (needs Zellij 0.45.1), or:
-rt grant main                              # prints a URL and a session credential for a browser
+**On the Linux machine to share** (Debian 13 or Ubuntu 24.04), as `alice`, after unpacking the
+release's agent bundle `rootkeel-agent-0.1.0-linux.tar.gz` and changing into it:
+
+```sh
+sudo agent/install.sh alice ~/machine.json
+```
+
+**From your computer, anywhere:**
+
+```sh
+rt attach main                              # in a terminal (needs Zellij 0.45.1), or:
+rt grant main                               # prints a URL and a session credential for a browser
 ```
 
 ## Downloads
 
-Each [release](https://github.com/rootkeel/rootkeel/releases) is meant to carry:
+Each [release](https://github.com/rootkeel/rootkeel/releases) carries:
 
 | What | Runs on |
 |---|---|

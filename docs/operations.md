@@ -68,7 +68,8 @@ without the key, and the key is what protects the machine credentials in it. Sto
 consistent copy, or use SQLite's online backup:
 
 ```sh
-sudo sqlite3 "$state/db/broker.sqlite" ".backup '/root/broker-$(date +%F).sqlite'"
+state=/srv/rootkeel/prod                         # your RT_STATE_DIR
+sudo sh -c "umask 077; python3 -c 'import sqlite3, sys; sqlite3.connect(sys.argv[1]).backup(sqlite3.connect(sys.argv[2]))' $state/db/broker.sqlite /root/broker-\$(date +%F).sqlite"
 ```
 
 Also keep `<state>/owner` (or plan to rotate it after a restore) and your environment file. Never
@@ -81,8 +82,8 @@ the old one).
 ## Upgrades
 
 1. Read the release notes.
-2. Check out the new release. Set `RT_BROKER_IMAGE` and `RT_RELAY_IMAGE` to its published image
-   digests when its release notes list them; otherwise build its images under a new version tag
+2. Check out the new release. Set `RT_BROKER_IMAGE` and `RT_RELAY_IMAGE` to the image digests its
+   release notes print; for a commit that is not a release, build its images under a new version tag
    (an existing tag is refused), for example `scripts/build-images.sh rootkeel-local 0.2.0`, and
    set them to the new references (`rootkeel-local/broker:0.2.0`, `rootkeel-local/relay:0.2.0`).
    Keep `RT_PROXY_IMAGE` as the release's example file pins it.

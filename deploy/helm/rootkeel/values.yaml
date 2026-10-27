@@ -28,9 +28,9 @@ grantIdleTimeout: 0
 grantMaxLifetime: 0
 
 # [RT_BROKER_IMAGE, RT_RELAY_IMAGE, RT_PROXY_IMAGE] Images, each pinned to one build: a version tag or
-# a digest, never a moving tag such as latest. Release images are not published yet: build the broker
-# and relay with `scripts/build-images.sh --push <your registry>/rootkeel <version>` and put the
-# printed references here.
+# a digest, never a moving tag such as latest. Use the digests of ghcr.io/rootkeel/broker and
+# ghcr.io/rootkeel/relay that the release's notes print, or build the broker and relay with
+# `scripts/build-images.sh --push <your registry>/rootkeel <version>` and put the printed references here.
 images:
   broker: rootkeel-local/broker:0.1.0
   relay: rootkeel-local/relay:0.1.0
