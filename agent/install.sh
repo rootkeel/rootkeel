@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: AGPL-3.0-only
 # Install the agent on the Linux machine to share, from a checkout of the release you run.
-# Usage: sudo agent/install.sh <ordinary-user> <machine.json> [--no-start]
+# Usage: sudo agent/install.sh <ordinary-user> <machine.json> [--no-start] [--allow-root]
 # <ordinary-user> is the account whose shell is shared; machine.json comes from rt enroll.
+# --allow-root shares root's own shell instead, with full control of the machine.
 # The session is named main unless RT_SESSION names another.
 set -euo pipefail
 [ "$(id -u)" = 0 ] || { echo 'Run installer as root' >&2; exit 1; }
 owner=${1:?ordinary Linux user required}
 source_credential=${2:?enrolled machine.json required}
-start_mode=${3:-start}
-case "$start_mode" in start | --no-start) ;; *) echo 'Expected optional --no-start' >&2; exit 1 ;; esac
+start_mode=start
+allow_root=no
+for option in "${@:3}"; do
+  case "$option" in
+    --no-start) start_mode=--no-start ;;
+    --allow-root) allow_root=yes ;;
+    *) echo 'Expected optional --no-start or --allow-root' >&2; exit 1 ;;
+  esac
+done
 owner_uid=$(id -u "$owner")
-[ "$owner_uid" -ne 0 ] || { echo 'Shell must run as an ordinary user' >&2; exit 1; }
+[ "$owner_uid" -ne 0 ] || [ "$allow_root" = yes ] \
+  || { echo 'Shell must run as an ordinary user; pass --allow-root to share root' >&2; exit 1; }
 # Dedicated account never joins the shell user's groups.
 if ! id rt-agent >/dev/null 2>&1; then
   useradd --system --user-group --home-dir /var/lib/rootkeel --shell /usr/sbin/nologin rt-agent
@@ -132,6 +141,9 @@ fi
 # Verify the enrollment target without printing the credential.
 (cd /opt/rootkeel && python3 -c 'import json, sys; from rootkeel.agent import frpc_config
 frpc_config(json.load(open(sys.argv[1])))' /var/lib/rootkeel/machine.json)
+# A shared root shell keeps root's privileges; an ordinary user's gains none.
+terminal_limits=$'NoNewPrivileges=true\nCapabilityBoundingSet='
+[ "$owner_uid" -ne 0 ] || terminal_limits='# Shared as root (--allow-root): no privilege limits.'
 cat > /etc/systemd/system/rootkeel-terminal.service <<UNIT
 [Unit]
 Description=Rootkeel terminal: the owner's Zellij session and token helper
@@ -153,8 +165,7 @@ Restart=on-failure
 RestartSec=3
 KillMode=process
 UMask=0077
-NoNewPrivileges=true
-CapabilityBoundingSet=
+$terminal_limits
 [Install]
 WantedBy=multi-user.target
 UNIT

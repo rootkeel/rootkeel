@@ -74,7 +74,7 @@ Without Zellij you can still do everything else, and open terminals in a browser
 |---|---|---|
 | Debian 13 or Ubuntu 24.04, with systemd | `grep PRETTY_NAME /etc/os-release` | `Debian GNU/Linux 13 (trixie)` or `Ubuntu 24.04…` |
 | x86-64 or ARM64 | `uname -m` | `x86_64` or `aarch64` |
-| Root access through `sudo`, and an ordinary account to share (not root) | `id -u alice` | A number other than `0` |
+| Root access through `sudo`, and an ordinary account to share (not root; see [sharing root](#sharing-root)) | `id -u alice` | A number other than `0` |
 | Outbound HTTPS to the server, to github.com (the installer downloads Zellij and frpc from there) and to your distribution's package mirror | `curl -sSI https://github.com \| head -1` | `HTTP/2 200` |
 
 ## 2. Create the DNS records
@@ -574,6 +574,18 @@ m_0123456789abcdef01234567  devbox  enabled  2026-01-01 12:00
 ```
 
 Repeat step 11 for every machine you want to share.
+
+### Sharing root
+
+The installer refuses to share root's own shell unless you ask for it with `--allow-root`:
+
+```sh
+sudo agent/install.sh root ~/machine.json --allow-root
+```
+
+> **Warning:** with root shared, anyone who has the owner sign-in or a live session link has full
+> control of the machine, and can also read the machine credential. Prefer an ordinary account
+> that uses `sudo` when it needs root.
 
 ## 12. Open a terminal
 

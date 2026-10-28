@@ -16,7 +16,8 @@ Rootkeel protects, how, and where its protection ends. To report a vulnerability
 - **The shared account is the boundary.** A terminal runs as one ordinary Linux account. Someone
   with a grant can do anything that account can do, including reading its other files and
   processes and every other Zellij session of that account. Rootkeel does not isolate panes or
-  sessions from each other.
+  sessions from each other. If you [share root](install.md#sharing-root), the account is root, so
+  a grant controls the whole machine and can read the machine credential.
 
 ## Credentials
 
