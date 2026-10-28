@@ -18,6 +18,12 @@ pass() { echo "PASS $distribution: $*"; }
 useradd --create-home --shell /bin/bash alice
 # The credential as rt enroll leaves it in the owner's home.
 install -m 600 -o alice -g alice /machine.json /home/alice/machine.json
+# Root's own shell is shared only on request.
+if /src/agent/install.sh root /home/alice/machine.json --no-start > /tmp/install.log 2>&1; then
+  fail 'the installer shared root without --allow-root'
+fi
+grep -q -- 'pass --allow-root to share root' /tmp/install.log || fail "root refusal: $(cat /tmp/install.log)"
+pass 'the installer refuses root unless --allow-root is given'
 /src/agent/install.sh alice /home/alice/machine.json --no-start > /tmp/install.log 2>&1 \
   || { cat /tmp/install.log >&2; fail 'agent/install.sh failed'; }
 tail -n 1 /tmp/install.log
