@@ -120,15 +120,12 @@ file on your workstation such as `rootkeel-values.yaml`:
 environment: prod
 publicHost: term.example.com
 relayHost: term-relay.example.com
-requireImageDigest: true
-images:
-  broker: ghcr.io/rootkeel/broker@sha256:e901ad1ef899ff14f4d2f2d960232425e2af834976c6013a45829d0fe9bd4efb
-  relay: ghcr.io/rootkeel/relay@sha256:7043f2d96ab4bdcf92b7a76168fcddb99741eaa679402bb3e0e8c86789f268ee
 ```
 
-The two image digests are those of release 0.1.0; each release prints its own under "Server
-images" in its notes on the [releases page](https://github.com/rootkeel/rootkeel/releases). The
-images are public, so no pull Secret is needed. The defaults for everything else are in
+The chart defaults to the published 0.1.0 images, pinned by digest, with `requireImageDigest:
+true`. For another release, set `images.broker` and `images.relay` to the digests it prints under
+"Server images" in its notes on the [releases page](https://github.com/rootkeel/rootkeel/releases).
+The images are public, so no pull Secret is needed. The defaults for everything else are in
 [`values.yaml`](../deploy/helm/rootkeel/values.yaml). No value holds a credential: the owner
 credential and the database key are generated inside the cluster, on the state volume.
 
