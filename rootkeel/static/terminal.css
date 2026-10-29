@@ -33,6 +33,7 @@ h1 { font-size: 1.9rem; line-height: 1.2; margin: 0 0 1rem; }
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.25rem 1.5rem; margin: 0 0 1.25rem; }
 .page { max-width: 34rem; margin: 2.5rem auto; }
 .page form { margin-top: 1rem; }
+.page-logo { display: block; width: 160px; max-width: 100%; height: auto; margin: 0 auto 1rem; }
 
 label { display: block; margin: .8rem 0; }
 input { display: block; background: var(--surface); color: inherit; border: 1px solid var(--muted); border-radius: 6px;

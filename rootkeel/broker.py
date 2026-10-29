@@ -47,6 +47,13 @@ FRONT_DOOR_SECONDS = 30
 STATIC = Path(__file__).resolve().parent / "static"
 # The look of the broker's own pages.
 SHELL_CSS = STATIC / "terminal.css"
+FAVICON_ICO = STATIC / "favicon.ico"
+FAVICON_PNG = STATIC / "favicon.png"
+APPLE_TOUCH_ICON = STATIC / "apple-touch-icon.png"
+PAGE_LOGO = STATIC / "rootkeel-logo.png"
+ICON_LINKS = ('<link rel="icon" href="/_rt_favicon.ico" sizes="16x16 32x32 48x48" type="image/x-icon">'
+              '<link rel="icon" href="/_rt_favicon.png" sizes="32x32" type="image/png">'
+              '<link rel="apple-touch-icon" href="/_rt_apple-touch-icon.png">')
 # Copy and paste on a phone, which Zellij's web client does not offer there: loaded by the terminal page, under its grant.
 MOBILE_JS = STATIC / "terminal-mobile.js"
 MOBILE_SCRIPT = b'<script src="./_rt_mobile.js" defer></script>'
@@ -512,6 +519,13 @@ class Broker:
     async def proxy(self, request):
         if request.method == "GET" and request.path == "/_rt.css":
             return web.FileResponse(SHELL_CSS, headers={"Content-Type": "text/css"})
+        static = {"/_rt_favicon.ico": (FAVICON_ICO, "image/x-icon"),
+                  "/_rt_favicon.png": (FAVICON_PNG, "image/png"),
+                  "/_rt_apple-touch-icon.png": (APPLE_TOUCH_ICON, "image/png"),
+                  "/_rt_logo.png": (PAGE_LOGO, "image/png")}
+        if request.method == "GET" and request.path in static:
+            path, content_type = static[request.path]
+            return web.FileResponse(path, headers={"Content-Type": content_type})
         match = GRANT_PATH.fullmatch(request.path)
         if not match:
             if request.method == "GET" and (request.path == "/" or NAME.fullmatch(request.path[1:])):
@@ -557,8 +571,8 @@ class Broker:
             # Zellij's client reloads this page to reconnect; renewing the cookie keeps an open-ended grant signed in.
             self.set_cookie(response, grant, presented["presented"])
             if response.content_type == "text/html" and b"<head>" in response.body:
-                response.body = response.body.replace(b"<head>", b"<head>" + RELOAD_GUARD + LINK_CLEANUP + MOBILE_SCRIPT +
-                                                      FULLSCREEN_SCRIPT, 1)
+                response.body = response.body.replace(b"<head>", b"<head>" + RELOAD_GUARD + ICON_LINKS.encode() +
+                                                      LINK_CLEANUP + MOBILE_SCRIPT + FULLSCREEN_SCRIPT, 1)
         return response
 
     def signin(self, gid=None, link=False):
@@ -575,14 +589,14 @@ class Broker:
                 '<button type="submit" class="primary">Sign in</button></form>')
         if gid or link:
             content += '<p role="status" aria-live="polite"></p><script src="./_signin.js" defer></script>'
-        return web.Response(text='<!doctype html><html lang="en"><meta charset="utf-8">'
+        return web.Response(text='<!doctype html><html lang="en"><head><meta charset="utf-8">'
                             '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">'
-                            '<title>Rootkeel sign-in</title><link rel="stylesheet" href="/_rt.css">'
-                            '<header class="shell"><span class="brand"><span class="mark" aria-hidden="true">&gt;_</span>Rootkeel</span>'
-                            '</header><main><section class="panel page"><h1>' + heading + '</h1>' + content
-                            + '</section></main></html>',
+                            '<title>Rootkeel sign-in</title>' + ICON_LINKS + '<link rel="stylesheet" href="/_rt.css">'
+                            '</head><body><header class="shell"><span class="brand"><span class="mark" aria-hidden="true">&gt;_</span>Rootkeel</span>'
+                            '</header><main><section class="panel page"><img class="page-logo" src="/_rt_logo.png" alt="Rootkeel"><h1>' + heading + '</h1>' + content
+                            + '</section></main></body></html>',
                             content_type="text/html", headers={"Content-Security-Policy":
-                            "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; "
+                            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; "
                             "form-action 'self'; frame-ancestors 'none'"})
 
     async def attach(self, request, grant, cookie):
