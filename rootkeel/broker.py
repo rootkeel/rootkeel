@@ -571,7 +571,7 @@ class Broker:
             # Zellij's client reloads this page to reconnect; renewing the cookie keeps an open-ended grant signed in.
             self.set_cookie(response, grant, presented["presented"])
             if response.content_type == "text/html" and b"<head>" in response.body:
-                response.body = response.body.replace(b"<head>", b"<head>" + ICON_LINKS.encode() + RELOAD_GUARD +
+                response.body = response.body.replace(b"<head>", b"<head>" + RELOAD_GUARD + ICON_LINKS.encode() +
                                                       LINK_CLEANUP + MOBILE_SCRIPT + FULLSCREEN_SCRIPT, 1)
         return response
 

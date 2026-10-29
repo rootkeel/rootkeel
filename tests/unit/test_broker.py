@@ -21,7 +21,7 @@ from aiohttp import WSMsgType, WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 from rootkeel import admin, broker
 from rootkeel.agent import PROTOCOL as AGENT_PROTOCOL
-from rootkeel.broker import COOKIE_AGE, FULLSCREEN_JS, FULLSCREEN_SCRIPT, LINK_CLEANUP, MAX_COOKIES, MOBILE_JS, MOBILE_SCRIPT, PERMANENT_EXPIRES, \
+from rootkeel.broker import COOKIE_AGE, FULLSCREEN_JS, FULLSCREEN_SCRIPT, ICON_LINKS, LINK_CLEANUP, MAX_COOKIES, MOBILE_JS, MOBILE_SCRIPT, PERMANENT_EXPIRES, \
     RELOAD_GUARD, SIGNIN_JS, Broker
 from rootkeel.store import digest
 
@@ -311,7 +311,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         page = await self.client.get(self.terminal("/main"), headers=self.host | {"Cookie": "session_token=" + cookie})
         self.assertEqual(page.status, 200)
         # The guard comes first in <head>, so it sees every asset of the page fail or load.
-        self.assertEqual(await page.read(), b'<!doctype html><html><head>' + RELOAD_GUARD + LINK_CLEANUP + MOBILE_SCRIPT +
+        self.assertEqual(await page.read(), b'<!doctype html><html><head>' + RELOAD_GUARD + ICON_LINKS.encode() + LINK_CLEANUP + MOBILE_SCRIPT +
                          FULLSCREEN_SCRIPT + b'<script src="assets/xterm.js"></script></head></html>')
         self.assertNotIn(b"rt-page-retries", await (await self.client.get(self.terminal("/assets/owner.js"))).read())
 
