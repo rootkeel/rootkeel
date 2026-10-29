@@ -604,6 +604,23 @@ Open the `url` in any browser, on any device, and paste the `token` into the
 grant: `rt grants` lists open grants, `rt revoke g_…` ends one. With several machines, add
 `--machine devbox`.
 
+**On a phone**, let it scan the grant instead of typing it:
+
+```sh
+rt grant main --qr
+```
+
+draws a QR code in the terminal, followed by the terminal URL and the `rt revoke g_…` command that
+ends the grant. Point the phone's camera at the code and open the link it offers: the terminal
+opens already signed in, with nothing to type or paste. Add the page to the home screen or
+bookmark it if you like; the phone stays signed in until you revoke the grant with `rt revoke`.
+If the code shows cut off, widen the terminal window.
+
+The code holds the session credential, in the part of the link after `#`, which the browser never
+sends to the server, so it stays out of server logs; the page takes it out of the address bar as
+soon as it opens, before signing in. Treat the code like a password: anyone who scans it gets that
+terminal until you revoke the grant.
+
 ### In a terminal
 
 With Zellij 0.45.1 installed on your computer:
@@ -810,7 +827,7 @@ it; stop it, or bind Rootkeel elsewhere with `RT_HTTPS_BIND` and `RT_PUBLIC_PORT
 - `rt enrollment refused (409): An enrolled machine is already named devbox`: pick another name, or
   revoke the old machine first.
 - The browser says `Grant invalid or ended. Request a new session.`: the session credential is
-  wrong, or the grant was revoked. Run `rt grant main` again.
+  wrong, or the grant was revoked. Run `rt grant main` (or `rt grant main --qr`) again.
 
 ### The settings file is refused
 

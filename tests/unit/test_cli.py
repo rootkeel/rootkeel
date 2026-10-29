@@ -227,6 +227,65 @@ class CLITests(unittest.TestCase):
             self.assertEqual(err.strip(), shown)
             self.assertNotIn("private-owner", err)
 
+    def test_grant_qr_shows_a_code_that_signs_a_phone_in(self):
+        gid = "g_" + "b" * 24
+        grant = {"id": gid, "token": "Secret-Token_123", "machine": "m_x", "url": "https://owner.term.test/g/" + gid + "/main",
+                 "expires": time.time() + 60, "permanent": True}
+        calls = []
+        def request(base, path, credential, data=None, ca=None):
+            calls.append((path, data))
+            return json.dumps(grant).encode()
+        result, out, err = self.run_cli(["grant", "main", "--qr"], request)
+        self.assertEqual((result, err), (0, ""))
+        self.assertEqual(calls, [("/api/grants", {"session": "main"})])
+        *code, url, note = out.splitlines()
+        # The credential travels only inside the code, in the URL fragment, which browsers never send to a server.
+        self.assertNotIn("Secret-Token_123", out)
+        self.assertEqual(url, grant["url"])
+        self.assertEqual(note, "Scan it with a phone's camera to open session main there, signed in. Whoever scans it can "
+                               f"use that terminal, so treat it like a password; end it with rt revoke {gid}.")
+        # Dark on light whatever the terminal's colours: each line sets both, and resets them at its end.
+        self.assertTrue(all(line.startswith("\x1b[30;107m") and line.endswith("\x1b[0m") for line in code))
+        cells = [line.removeprefix("\x1b[30;107m").removesuffix("\x1b[0m") for line in code]
+        modules = [[cell in "▀█" for cell in line] for line in cells], [[cell in "▄█" for cell in line] for line in cells]
+        modules = [row for pair in zip(*modules) for row in pair]
+        expected = rt.qr_matrix((grant["url"] + "#token=Secret-Token_123").encode())
+        size, border = len(expected), rt.QR_BORDER
+        self.assertEqual(border, 4)
+        # A light border of four modules on every side (the last line's lower half is light too).
+        self.assertEqual({len(line) for line in cells}, {size + 2 * border})
+        self.assertEqual(len(modules), size + 2 * border + 1)
+        self.assertFalse(any(any(row) for row in modules[:border] + modules[border + size:]))
+        self.assertFalse(any(any(row[:border] + row[border + size:]) for row in modules))
+        self.assertEqual([row[border:border + size] for row in modules[border:border + size]], expected)
+
+    def test_grant_qr_refuses_a_url_off_this_server_and_revokes_the_grant(self):
+        gid = "g_" + "b" * 24
+        for url in ("https://owner.evil.test/g/" + gid + "/main", "https://owner.term.test/g/" + gid + "/main#x",
+                    "https://owner.term.test/g/" + gid + "/other", "http://owner.term.test/g/" + gid + "/main"):
+            calls = []
+            def request(base, path, credential, data=None, ca=None):
+                calls.append(path)
+                return json.dumps({"id": gid, "token": "Secret-Token_123", "url": url}).encode()
+            result, out, err = self.run_cli(["grant", "main", "--qr"], request)
+            self.assertEqual((result, out), (2, ""), url)
+            self.assertEqual(calls, ["/api/grants", "/api/revoke"])
+            self.assertIn("is not on https://term.test; the grant was revoked", err)
+            self.assertNotIn("Secret-Token_123", err)
+
+    def test_qr_goes_with_grant_only(self):
+        request = Mock()
+        for action in (["attach", "main"], ["grants"], ["revoke", "g_" + "b" * 24]):
+            with self.assertRaises(SystemExit) as raised:
+                self.run_cli([*action, "--qr"], request)
+            self.assertEqual(raised.exception.code, 2)
+        request.assert_not_called()
+
+    def test_grant_without_qr_still_prints_the_json(self):
+        grant = {"id": "g_" + "b" * 24, "token": "Secret-Token_123", "url": "https://owner.term.test/g/g_" + "b" * 24 + "/main"}
+        result, out, _ = self.run_cli(["grant", "main"], Mock(return_value=json.dumps(grant).encode()))
+        self.assertEqual((result, json.loads(out)), (0, grant))
+
     def test_unknown_session_is_created_only_when_asked(self):
         sent = []
         def request(base, path, credential, data=None, ca=None):
@@ -527,3 +586,34 @@ class LoginCLITests(unittest.TestCase):
         owner.write_text(self.credential + "\n")
         self.assertEqual(self.rt("logout", "--url", self.origin, "--credential-file", str(owner))[0], 1)
         self.assertTrue(owner.exists())
+
+
+class QRTests(unittest.TestCase):
+    """rt's own QR encoder, against matrices made with the qrcodegen reference implementation (byte mode, error
+    correction level M, not raised to a higher level when it would fit): every version size from the smallest to 40,
+    the version information from 7 on, 16-bit lengths from 10 on, and several blocks of two lengths."""
+
+    def test_matrices_match_the_reference(self):
+        fixtures = json.loads((Path(__file__).parent / "qr_fixtures.json").read_text())
+        self.assertEqual(len(fixtures), 12)
+        for fixture in fixtures:
+            size = len(fixture["rows"])
+            expected = [[bit == "1" for bit in format(int(row, 16), f"0{size}b")] for row in fixture["rows"]]
+            self.assertEqual(size, fixture["version"] * 4 + 17)
+            self.assertEqual(rt.qr_matrix(fixture["text"].encode()), expected, (fixture["version"], fixture["mask"]))
+
+    def test_versions_hold_their_capacity_at_level_m(self):
+        # Bytes each version holds at level M (ISO/IEC 18004 table 7): one more takes the next version.
+        for version, capacity in ((1, 14), (2, 26), (6, 106), (7, 122), (9, 180), (10, 213), (40, 2331)):
+            self.assertEqual(len(rt.qr_matrix(b"a" * capacity)), version * 4 + 17)
+            if version < 40:
+                self.assertEqual(len(rt.qr_matrix(b"a" * (capacity + 1))), version * 4 + 21)
+        with self.assertRaises(ValueError):
+            rt.qr_matrix(b"a" * 2332)
+
+    def test_alignment_pattern_positions(self):
+        # ISO/IEC 18004 annex E.
+        for version, centres in ((1, []), (2, [6, 18]), (7, [6, 22, 38]), (14, [6, 26, 46, 66]),
+                                 (32, [6, 34, 60, 86, 112, 138]), (36, [6, 24, 50, 76, 102, 128, 154]),
+                                 (40, [6, 30, 58, 86, 114, 142, 170])):
+            self.assertEqual(rt.qr_alignment(version), centres, version)

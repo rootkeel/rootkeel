@@ -81,6 +81,7 @@ sudo agent/install.sh alice ~/machine.json
 ```sh
 rt attach main                              # in a terminal (needs Zellij 0.45.1), or:
 rt grant main                               # prints a URL and a session credential for a browser
+rt grant main --qr                          # or a QR code: a phone that scans it opens the terminal, signed in
 ```
 
 ## Downloads

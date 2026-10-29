@@ -48,7 +48,9 @@ API's origin.
    relay for a fresh Zellij token, stores the grant, and returns
    `https://owner.term.example.com/g/<grant>/main` with a session credential.
 2. The browser opens the URL. Without a cookie for the grant it gets the broker's sign-in page.
-   The credential is posted to `/g/<grant>/command/login`; the broker logs in to Zellij on the
+   The credential, pasted into its form or carried in the URL fragment of an `rt grant --qr` code
+   (`#token=…`, never sent to the server and removed from the address bar before signing in), is
+   posted to `/g/<grant>/command/login`; the broker logs in to Zellij on the
    machine with the grant's token and sets a `Secure`, `HttpOnly`, `SameSite=Strict` cookie for
    `/g/<grant>/`.
 3. Page, assets and WebSockets go through the broker, which checks the cookie, the exact origin and

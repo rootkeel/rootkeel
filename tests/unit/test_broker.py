@@ -21,7 +21,8 @@ from aiohttp import WSMsgType, WSServerHandshakeError, web
 from aiohttp.test_utils import TestClient, TestServer
 from rootkeel import admin, broker
 from rootkeel.agent import PROTOCOL as AGENT_PROTOCOL
-from rootkeel.broker import COOKIE_AGE, FULLSCREEN_JS, FULLSCREEN_SCRIPT, MAX_COOKIES, MOBILE_JS, MOBILE_SCRIPT, PERMANENT_EXPIRES, RELOAD_GUARD, Broker
+from rootkeel.broker import COOKIE_AGE, FULLSCREEN_JS, FULLSCREEN_SCRIPT, LINK_CLEANUP, MAX_COOKIES, MOBILE_JS, MOBILE_SCRIPT, PERMANENT_EXPIRES, \
+    RELOAD_GUARD, SIGNIN_JS, Broker
 from rootkeel.store import digest
 
 # Idle and absolute limits other terminal services commonly impose: 15 minutes without input, 8 hours.
@@ -310,7 +311,7 @@ class BrokerTests(unittest.IsolatedAsyncioTestCase):
         page = await self.client.get(self.terminal("/main"), headers=self.host | {"Cookie": "session_token=" + cookie})
         self.assertEqual(page.status, 200)
         # The guard comes first in <head>, so it sees every asset of the page fail or load.
-        self.assertEqual(await page.read(), b'<!doctype html><html><head>' + RELOAD_GUARD + MOBILE_SCRIPT +
+        self.assertEqual(await page.read(), b'<!doctype html><html><head>' + RELOAD_GUARD + LINK_CLEANUP + MOBILE_SCRIPT +
                          FULLSCREEN_SCRIPT + b'<script src="assets/xterm.js"></script></head></html>')
         self.assertNotIn(b"rt-page-retries", await (await self.client.get(self.terminal("/assets/owner.js"))).read())
 
@@ -974,7 +975,123 @@ console.log(JSON.stringify([run(Array(6).fill([true, false])), run([[false, fals
             self.assertNotIn("unsafe-inline", policy)
         script = await self.client.get(self.terminal("/_signin.js", grant), headers=self.host)
         self.assertEqual((script.status, script.content_type), (200, "application/javascript"))
+        self.assertEqual(await script.text(), SIGNIN_JS.read_text())
         self.assertIn("./command/login", await script.text())
+
+    async def test_sign_in_links_are_handled_on_every_grant_page(self):
+        # A scanned rt grant --qr link carries the credential in its fragment; whatever the grant's state, the page
+        # under its path loads the script that takes it out of the address bar. The owner's landing page has no link.
+        loads = '<p role="status" aria-live="polite"></p><script src="./_signin.js" defer></script>'
+        grant = await self.grant()
+        open_page = await (await self.client.get(self.terminal("/main", grant), headers=self.host)).text()
+        self.assertIn('<input type="password"', open_page)
+        self.assertIn(loads, open_page)
+        await self.client.post("/api/revoke", headers=self.host | self.owner, json={"id": grant["id"]})
+        unknown = {"id": "g_" + "0" * 24}
+        for path in (self.terminal("/main", grant), self.terminal("/main", unknown)):
+            ended = await (await self.client.get(path, headers=self.host)).text()
+            self.assertIn("<h1>Open a terminal session</h1>", ended)
+            self.assertIn(loads, ended)
+            script = await self.client.get(path.removesuffix("/main") + "/_signin.js", headers=self.host)
+            self.assertEqual((script.status, await script.text()), (200, SIGNIN_JS.read_text()))
+        self.assertNotIn("_signin.js", await (await self.client.get("/", headers=self.host)).text())
+
+    @unittest.skipUnless(shutil.which("node"), "needs Node.js")
+    def test_sign_in_link_signs_in_and_leaves_no_credential_in_the_address_bar(self):
+        # Runs the sign-in script on a fake page: the form page or an ended grant's page (no form), a URL fragment,
+        # and the server's answer to the sign-in request. Records the address bar at each step.
+        driver = """
+const vm = require('vm');
+const load = async ({hash, form = true, answer = 401, submit, later}) => {
+  const steps = [], listeners = {}, events = {}, status = {textContent: ''}, input = {value: ''};
+  const location = {hash, pathname: '/g/g_x/main', search: '', reload: () => steps.push(['reload', location.hash])};
+  const settle = async () => { for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve)); };
+  vm.runInNewContext(SCRIPT, {
+    URLSearchParams, JSON,
+    location,
+    addEventListener: (type, listener) => { events[type] = listener; },
+    history: {state: null, replaceState: (state, title, url) => { steps.push(['address', url]); location.hash = ''; }},
+    document: {querySelector: selector => selector === '[role=status]' ? status :
+      selector === 'form' && form ? {addEventListener: (type, listener) => { listeners[type] = listener; }, querySelector: () => input} : null},
+    fetch: async (url, options) => {
+      steps.push(['fetch', url, JSON.parse(options.body).auth_token, location.hash]);
+      if (answer === 'offline') throw new TypeError('Failed to fetch');
+      return {ok: answer === 200};
+    },
+  });
+  await settle();
+  if (later !== undefined) {
+    // The link opened again in this tab: only the fragment changes, and the page gets a hashchange, not a load.
+    steps.push(['opened', later]);
+    location.hash = later;
+    events.hashchange();
+    await settle();
+  }
+  if (submit !== undefined) {
+    input.value = submit;
+    await listeners.submit({preventDefault: () => steps.push(['prevented'])});
+    steps.push(['input', input.value]);
+  }
+  return {steps, status: status.textContent};
+};
+(async () => console.log(JSON.stringify(await Promise.all([
+  load({hash: '#token=secret-1', answer: 200}),
+  load({hash: '#token=secret-2', answer: 401}),
+  load({hash: '#token=secret-3', answer: 'offline'}),
+  load({hash: '#token=secret-4', form: false}),
+  load({hash: '', answer: 401, submit: 'typed'}),
+  load({hash: '', answer: 'offline', submit: 'typed'}),
+  load({hash: '#other', answer: 200}),
+  load({hash: '', answer: 200, later: '#token=secret-5'}),
+  load({hash: '', form: false, later: '#token=secret-6'}),
+]))))();
+""".replace("SCRIPT", json.dumps(SIGNIN_JS.read_text()))
+        result = subprocess.run(["node", "-e", driver], capture_output=True, text=True, check=True)
+        scanned, refused, offline, ended, typed, typed_offline, other, reopened, reopened_ended = json.loads(result.stdout)
+        # The fragment leaves the address bar before the sign-in request; on success the page reloads into the terminal.
+        self.assertEqual(scanned["steps"], [["address", "/g/g_x/main"], ["fetch", "./command/login", "secret-1", ""],
+                                            ["reload", ""]])
+        self.assertEqual(scanned["status"], "Signing in…")
+        for case in (refused, offline):
+            self.assertEqual(case["steps"][:2], [["address", "/g/g_x/main"], ["fetch", "./command/login", case["steps"][1][2], ""]])
+            self.assertNotIn(["reload", ""], case["steps"])
+        for case in (refused, offline):
+            self.assertEqual(case["status"], "The scanned code did not sign in. Grant invalid or ended. Request a new session.")
+        # An ended grant's page has no form: it still clears the address bar, and says why there is nothing to do.
+        self.assertEqual(ended["steps"], [["address", "/g/g_x/main"]])
+        self.assertEqual(ended["status"], "The scanned code did not sign in. Grant invalid or ended. Request a new session.")
+        # The form works as before, and an unrelated fragment is dropped without a sign-in.
+        self.assertEqual(typed["steps"], [["prevented"], ["fetch", "./command/login", "typed", ""], ["input", ""]])
+        self.assertEqual(typed["status"], "Grant invalid or ended. Request a new session.")
+        self.assertEqual(typed_offline["status"], "Grant invalid or ended. Request a new session.")
+        self.assertEqual(other, {"steps": [["address", "/g/g_x/main"]], "status": ""})
+        # A link opened again in an open tab changes only the fragment: it is cleared and used just as on a load.
+        self.assertEqual(reopened["steps"], [["opened", "#token=secret-5"], ["address", "/g/g_x/main"],
+                                             ["fetch", "./command/login", "secret-5", ""], ["reload", ""]])
+        self.assertEqual(reopened_ended["steps"], [["opened", "#token=secret-6"], ["address", "/g/g_x/main"]])
+        self.assertEqual(reopened_ended["status"], "The scanned code did not sign in. Grant invalid or ended. Request a new session.")
+
+    @unittest.skipUnless(shutil.which("node"), "needs Node.js")
+    def test_terminal_page_takes_a_sign_in_link_out_of_the_address_bar(self):
+        # A browser already signed in opens the terminal straight away; the link's credential must not stay visible.
+        script = LINK_CLEANUP.decode().removeprefix("<script>").removesuffix("</script>")
+        driver = """
+const vm = require('vm');
+// Each page loads with one fragment, then the tab is given another (a link opened again in it): only a hashchange.
+console.log(JSON.stringify([['#token=secret', ''], ['#t=1', ''], ['', '#token=again'], ['', '#t=2']].map(([hash, later]) => {
+  const replaced = [], events = {}, location = {hash, pathname: '/g/g_x/main', search: '?a=1'};
+  vm.runInNewContext(SCRIPT, {URLSearchParams, location, addEventListener: (type, listener) => { events[type] = listener; },
+                              history: {state: 'kept', replaceState: (...args) => { replaced.push(args); location.hash = ''; }}});
+  if (later) {
+    location.hash = later;
+    events.hashchange();
+  }
+  return [replaced, location.hash];
+})));
+""".replace("SCRIPT", json.dumps(script))
+        result = subprocess.run(["node", "-e", driver], capture_output=True, text=True, check=True)
+        self.assertEqual(json.loads(result.stdout), [[[["kept", "", "/g/g_x/main?a=1"]], ""], [[], "#t=1"],
+                                                     [[["kept", "", "/g/g_x/main?a=1"]], ""], [[], "#t=2"]])
 
 
     # ----- several machines per owner ----------------------------------------
