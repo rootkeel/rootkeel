@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/rootkeel-logo.png" alt="Rootkeel" width="200"></p>
+
 # Rootkeel
 
 Self-hostable shared terminals for developers and their agents.
