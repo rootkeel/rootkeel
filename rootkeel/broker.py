@@ -589,12 +589,11 @@ class Broker:
                 '<button type="submit" class="primary">Sign in</button></form>')
         if gid or link:
             content += '<p role="status" aria-live="polite"></p><script src="./_signin.js" defer></script>'
-        logo = '<img class="page-logo" src="/_rt_logo.png" alt="Rootkeel">' if gid else ""
         return web.Response(text='<!doctype html><html lang="en"><head><meta charset="utf-8">'
                             '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">'
                             '<title>Rootkeel sign-in</title>' + ICON_LINKS + '<link rel="stylesheet" href="/_rt.css">'
                             '</head><body><header class="shell"><span class="brand"><span class="mark" aria-hidden="true">&gt;_</span>Rootkeel</span>'
-                            '</header><main><section class="panel page">' + logo + '<h1>' + heading + '</h1>' + content
+                            '</header><main><section class="panel page"><img class="page-logo" src="/_rt_logo.png" alt="Rootkeel"><h1>' + heading + '</h1>' + content
                             + '</section></main></body></html>',
                             content_type="text/html", headers={"Content-Security-Policy":
                             "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; "
