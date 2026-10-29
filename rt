@@ -6,6 +6,8 @@ rt login: save this server's owner credential on this computer, in ~/.config/rt/
 (mode 0600), and the server URL in ~/.config/rt/url, so RT_URL and RT_CREDENTIAL_FILE are optional.
 rt logout deletes it again.
 
+rt grant SESSION --qr: a QR code that a phone's camera opens as that terminal, signed in.
+
 rt attach: native grants, version check and reconnect without token logs.
 Leave by detaching (Ctrl+Alt+g, then d); a dropped connection reconnects by itself,
 to the same session, for as long as the grant is not revoked.
@@ -22,6 +24,7 @@ import os
 import random
 import re
 import select
+import shutil
 import signal
 import socket
 import ssl
@@ -224,6 +227,213 @@ class NativeGateway:
                 upstream.close()
 
 
+# QR codes for rt grant --qr, after ISO/IEC 18004: byte mode, error correction level M (readable with up to 15% of
+# the code damaged), the smallest version (size) that holds the text, and the mask with the lowest penalty.
+# Standard library only, so rt still installs as one file. Per version 1 to 40: error correction codewords per block,
+# and blocks.
+QR_ECC_PER_BLOCK = (0, 10, 16, 26, 18, 24, 16, 18, 22, 22, 26, 30, 22, 22, 24, 24, 28, 28, 26, 26, 26, 26, 28, 28, 28, 28,
+                    28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28, 28)
+QR_BLOCKS = (0, 1, 1, 1, 2, 2, 4, 4, 4, 5, 5, 5, 8, 9, 9, 10, 10, 11, 13, 14, 16, 17, 17, 18, 20, 21, 23, 25, 26, 28, 29,
+             31, 33, 35, 37, 38, 40, 43, 45, 47, 49)
+# Which modules each mask inverts, by column x and row y.
+QR_MASKS = (lambda x, y: (x + y) % 2 == 0, lambda x, y: y % 2 == 0, lambda x, y: x % 3 == 0,
+            lambda x, y: (x + y) % 3 == 0, lambda x, y: (x // 3 + y // 2) % 2 == 0,
+            lambda x, y: x * y % 2 + x * y % 3 == 0, lambda x, y: (x * y % 2 + x * y % 3) % 2 == 0,
+            lambda x, y: ((x + y) % 2 + x * y % 3) % 2 == 0)
+
+
+def qr_codewords(version):
+    """All codewords of a version: its modules less the function patterns, eight to a codeword."""
+    modules = (16 * version + 128) * version + 64
+    if version >= 2:
+        count = version // 7 + 2
+        modules -= (25 * count - 10) * count - 55
+        if version >= 7:
+            modules -= 36
+    return modules // 8
+
+
+def qr_alignment(version):
+    """The centres of a version's alignment patterns along either axis."""
+    if version == 1:
+        return []
+    count, size = version // 7 + 2, version * 4 + 17
+    step = (version * 8 + count * 3 + 5) // (count * 4 - 4) * 2
+    return [6] + [size - 7 - i * step for i in reversed(range(count - 1))]
+
+
+def gf_multiply(x, y):
+    """Multiplication in GF(256) modulo x^8 + x^4 + x^3 + x^2 + 1."""
+    z = 0
+    for i in reversed(range(8)):
+        z = (z << 1) ^ ((z >> 7) * 0x11D)
+        z ^= ((y >> i) & 1) * x
+    return z
+
+
+def qr_ecc(data, degree):
+    """One block's Reed-Solomon error correction codewords."""
+    divisor, root = [0] * (degree - 1) + [1], 1
+    for _ in range(degree):
+        for j in range(degree):
+            divisor[j] = gf_multiply(divisor[j], root)
+            if j + 1 < degree:
+                divisor[j] ^= divisor[j + 1]
+        root = gf_multiply(root, 2)
+    remainder = [0] * degree
+    for byte in data:
+        factor = byte ^ remainder.pop(0)
+        remainder.append(0)
+        for i, coefficient in enumerate(divisor):
+            remainder[i] ^= gf_multiply(coefficient, factor)
+    return remainder
+
+
+def qr_penalty(grid):
+    """A masked code's penalty: long runs, 2x2 blocks, finder-like patterns and an uneven dark share all score."""
+    size, score = len(grid), 0
+
+    def finder_like(runs):  # Dark-light-dark-dark-dark-light-dark at 1:1:3:1:1, with four light modules on one side.
+        n = runs[1]
+        core = n > 0 and runs[2] == runs[4] == runs[5] == n and runs[3] == n * 3
+        return (core and runs[0] >= n * 4 and runs[6] >= n) + (core and runs[6] >= n * 4 and runs[0] >= n)
+
+    for line in grid + [list(column) for column in zip(*grid)]:
+        colour, run, runs = False, 0, [0] * 7  # Runs newest first; the light border outside counts as light.
+        for cell in line:
+            if cell == colour:
+                run += 1
+                score += 3 if run == 5 else run > 5
+            else:
+                runs = [run + (size if not runs[0] else 0)] + runs[:6]
+                if not colour:
+                    score += finder_like(runs) * 40
+                colour, run = cell, 1
+        if colour:
+            runs, run = [run + (size if not runs[0] else 0)] + runs[:6], 0
+        runs = [run + size + (size if not runs[0] else 0)] + runs[:6]
+        score += finder_like(runs) * 40
+    score += 3 * sum(grid[y][x] == grid[y][x + 1] == grid[y + 1][x] == grid[y + 1][x + 1]
+                     for y in range(size - 1) for x in range(size - 1))
+    dark, total = sum(map(sum, grid)), size * size
+    return score + 10 * ((abs(dark * 20 - total * 10) + total - 1) // total - 1)
+
+
+def qr_matrix(data):
+    """The modules of a QR code holding data (bytes), row by row, True for dark."""
+    for version in range(1, 41):
+        capacity = qr_codewords(version) - QR_ECC_PER_BLOCK[version] * QR_BLOCKS[version]
+        count_bits = 8 if version < 10 else 16
+        if 4 + count_bits + 8 * len(data) <= capacity * 8:
+            break
+    else:
+        raise ValueError("Too long for a QR code")
+    bits = "0100" + format(len(data), f"0{count_bits}b") + "".join(format(byte, "08b") for byte in data)
+    bits += "0" * min(4, capacity * 8 - len(bits))
+    bits += "0" * (-len(bits) % 8)
+    codewords = [int(bits[i:i + 8], 2) for i in range(0, len(bits), 8)]
+    codewords += [(0xEC, 0x11)[i % 2] for i in range(capacity - len(codewords))]
+    # Split into blocks, the first ones a codeword shorter, then interleave their data and their error correction.
+    blocks, degree = QR_BLOCKS[version], QR_ECC_PER_BLOCK[version]
+    short, length = blocks - qr_codewords(version) % blocks, qr_codewords(version) // blocks - degree
+    parts, start = [], 0
+    for i in range(blocks):
+        parts.append(codewords[start:start + length + (i >= short)])
+        start += len(parts[-1])
+    corrections = [qr_ecc(part, degree) for part in parts]
+    stream = [part[i] for i in range(length + 1) for part in parts if i < len(part)]
+    stream += [correction[i] for i in range(degree) for correction in corrections]
+
+    size = version * 4 + 17
+    grid = [[False] * size for _ in range(size)]
+    reserved = [[False] * size for _ in range(size)]
+
+    def put(x, y, dark, into=grid):
+        into[y][x], reserved[y][x] = bool(dark), True
+
+    for i in range(size):  # Timing patterns.
+        put(6, i, i % 2 == 0)
+        put(i, 6, i % 2 == 0)
+    for cx, cy in ((3, 3), (size - 4, 3), (3, size - 4)):  # Finder patterns, with their light separators.
+        for dy in range(-4, 5):
+            for dx in range(-4, 5):
+                if 0 <= cx + dx < size and 0 <= cy + dy < size:
+                    put(cx + dx, cy + dy, max(abs(dx), abs(dy)) not in (2, 4))
+    centres = qr_alignment(version)
+    last = len(centres) - 1
+    for i, cx in enumerate(centres):
+        for j, cy in enumerate(centres):
+            if (i, j) not in ((0, 0), (0, last), (last, 0)):  # Those would overlap the finder patterns.
+                for dy in range(-2, 3):
+                    for dx in range(-2, 3):
+                        put(cx + dx, cy + dy, max(abs(dx), abs(dy)) != 1)
+
+    def format_info(mask, into):  # Level M (00) and the mask, BCH-coded, in both copies, and the dark module.
+        remainder = mask
+        for _ in range(10):
+            remainder = (remainder << 1) ^ ((remainder >> 9) * 0x537)
+        info = (mask << 10 | remainder) ^ 0x5412
+        for i in range(6):
+            put(8, i, info >> i & 1, into)
+        put(8, 7, info >> 6 & 1, into)
+        put(8, 8, info >> 7 & 1, into)
+        put(7, 8, info >> 8 & 1, into)
+        for i in range(9, 15):
+            put(14 - i, 8, info >> i & 1, into)
+        for i in range(8):
+            put(size - 1 - i, 8, info >> i & 1, into)
+        for i in range(8, 15):
+            put(8, size - 15 + i, info >> i & 1, into)
+        put(8, size - 8, True, into)
+
+    format_info(0, grid)  # Reserves its modules; the chosen mask's information replaces it.
+    if version >= 7:  # Version information, BCH-coded, in both corners.
+        remainder = version
+        for _ in range(12):
+            remainder = (remainder << 1) ^ ((remainder >> 11) * 0x1F25)
+        info = version << 12 | remainder
+        for i in range(18):
+            put(size - 11 + i % 3, i // 3, info >> i & 1)
+            put(i // 3, size - 11 + i % 3, info >> i & 1)
+    # Data in two-module columns, zigzagging up and down from the right, skipping the vertical timing pattern.
+    bit = 0
+    for right in range(size - 1, 0, -2):
+        if right <= 6:
+            right -= 1
+        upward = (right + 1) & 2 == 0
+        for vertical in range(size):
+            y = size - 1 - vertical if upward else vertical
+            for x in (right, right - 1):
+                if not reserved[y][x] and bit < len(stream) * 8:
+                    grid[y][x] = bool(stream[bit >> 3] >> (7 - (bit & 7)) & 1)
+                    bit += 1
+
+    def masked(mask):
+        result = [[cell != (not reserved[y][x] and QR_MASKS[mask](x, y)) for x, cell in enumerate(row)]
+                  for y, row in enumerate(grid)]
+        format_info(mask, result)
+        return result
+
+    return min((masked(mask) for mask in range(8)), key=qr_penalty)
+
+
+# The light border (quiet zone) around a code, in modules.
+QR_BORDER = 4
+
+
+def qr_text(grid):
+    """A QR code's modules in half blocks, two rows to a line. It sets its own colours, dark on light inside a light
+    border, so phone cameras read it in dark and light terminals alike."""
+    size = len(grid)
+
+    def dark(x, y):
+        return 0 <= x < size and 0 <= y < size and grid[y][x]
+
+    return "\n".join("\x1b[30;107m" + "".join(" ▀▄█"[dark(x, y) + 2 * dark(x, y + 1)]
+                                              for x in range(-QR_BORDER, size + QR_BORDER)) + "\x1b[0m"
+                     for y in range(-QR_BORDER, size + QR_BORDER, 2))
+
+
 def request(base, path, credential, data=None, ca=None):
     headers = {"Authorization": "Bearer " + credential} if credential else {}
     if data is not None:
@@ -245,6 +455,13 @@ def terminal_origin(url, base):
     a, b = urlsplit(url), urlsplit(base)
     return (a.scheme == b.scheme == "https" and bool(b.hostname) and a.hostname == "owner." + b.hostname
             and (a.port or 443) == (b.port or 443))
+
+
+def grant_url_ok(grant, base, session):
+    """True when a grant's URL is base's terminal origin at exactly this grant and session, with nothing appended."""
+    url = urlsplit(grant["url"])
+    return bool(re.fullmatch(r"g_[0-9a-f]{24}", grant["id"])) and terminal_origin(grant["url"], base) and \
+        url.path == "/g/" + grant["id"] + "/" + session and not url.query and not url.fragment
 
 
 def refusal(error):
@@ -386,7 +603,11 @@ def main():
     parser.add_argument("--name", help="enrollment: a name for the machine to enroll, used with --machine")
     parser.add_argument("--create", action="store_true",
                         help="attach, grant: start a new session with this name if the machine has none")
+    parser.add_argument("--qr", action="store_true",
+                        help="grant: show a QR code instead of JSON; a phone that scans it opens the terminal signed in")
     args = parser.parse_args()
+    if args.qr and args.action != "grant":
+        parser.error("--qr goes with grant only")
     args.url = args.url or stored_url()
     if not args.url:
         parser.error("Set RT_URL, supply --url or run rt login --url URL")
@@ -426,6 +647,26 @@ def main():
     except urllib.error.HTTPError as error:
         print(f"rt {args.action} refused {refusal(error)}", file=sys.stderr)
         return 1
+
+
+def show_qr(grant, session, base, api):
+    """rt grant --qr: the grant's URL with its session credential in the fragment (#token=...), as a QR code. Browsers
+    never send a fragment to the server; the sign-in page signs in with it and takes it out of the address bar."""
+    if not grant_url_ok(grant, base, session):
+        # The code would hand the credential to whatever the URL names.
+        api("/api/revoke", {"id": grant["id"]})
+        print("Server grant URL " + grant["url"] + " is not on " + base +
+              "; the grant was revoked. Check RT_URL and the server's RT_PUBLIC_HOST.", file=sys.stderr)
+        return 2
+    grid = qr_matrix((grant["url"] + "#" + urlencode({"token": grant["token"]})).encode())
+    width = len(grid) + 2 * QR_BORDER
+    if 0 < shutil.get_terminal_size((0, 0)).columns < width:
+        print(f"The code below is {width} columns wide: widen this terminal so that it shows whole.", file=sys.stderr)
+    print(qr_text(grid))
+    print(grant["url"])
+    print(f"Scan it with a phone's camera to open session {session} there, signed in. Whoever scans it can use that "
+          f"terminal, so treat it like a password; end it with rt revoke {grant['id']}.")
+    return 0
 
 
 def version_path(machine):
@@ -472,6 +713,8 @@ def command(args, parser, base, api):
         action = "grants" if args.action == "grant" else args.action
         data = session if action == "grants" else {"id": args.target}
         result = api("/api/" + action, None if action == "audit" else data)
+        if args.qr:
+            return show_qr(json.loads(result), args.target, base, api)
         # Grant commands intentionally deliver credentials privately.
         print(result.decode())
         return 0
@@ -489,9 +732,7 @@ def command(args, parser, base, api):
     for number in (signal.SIGHUP, signal.SIGTERM):
         signal.signal(number, signal.default_int_handler)
     grant = json.loads(api("/api/grants", session))
-    if not re.fullmatch(r"g_[0-9a-f]{24}", grant["id"]) or not terminal_origin(grant["url"], base) or \
-            urlsplit(grant["url"]).path != "/g/" + grant["id"] + "/" + args.target or \
-            urlsplit(grant["url"]).query or urlsplit(grant["url"]).fragment:
+    if not grant_url_ok(grant, base, args.target):
         # A broker configured for another domain must not redirect the native client.
         api("/api/revoke", {"id": grant["id"]})
         print("Server attach URL " + grant["url"] + " is not on " + base +

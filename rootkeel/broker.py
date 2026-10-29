@@ -54,13 +54,14 @@ MOBILE_SCRIPT = b'<script src="./_rt_mobile.js" defer></script>'
 FULLSCREEN_JS = STATIC / "terminal-fullscreen.js"
 FULLSCREEN_SCRIPT = b'<script src="./_rt_fullscreen.js" defer></script>'
 
-SIGNIN_JS = """document.querySelector('form').addEventListener('submit', async event => {
-event.preventDefault(); const input = document.querySelector('input');
-try { const response = await fetch('./command/login', {method: 'POST', credentials: 'same-origin',
-headers: {'Content-Type': 'application/json'}, body: JSON.stringify({auth_token: input.value})});
-input.value = ''; if (!response.ok) throw Error(); location.reload(); }
-catch { document.querySelector('[role=status]').textContent = 'Grant invalid or ended. Request a new session.'; }
-});"""
+# The sign-in form, and the sign-in links of rt grant --qr, which carry the session credential in the URL fragment.
+SIGNIN_JS = STATIC / "terminal-signin.js"
+# A signed-in browser that opens a sign-in link again lands on the terminal itself: take the credential out of its
+# address bar there too, also when the link is opened in a tab already showing the terminal (only the fragment changes,
+# so the page does not load again).
+LINK_CLEANUP = (b"<script>(() => { const strip = () => { if (new URLSearchParams(location.hash.slice(1)).has('token')) "
+                b"history.replaceState(history.state, '', location.pathname + location.search); }; "
+                b"addEventListener('hashchange', strip); strip(); })();</script>")
 
 # Zellij's client reconnects by reloading its page, often while the network is still changing (a Wi-Fi switch):
 # Chrome then fails the reload's requests with ERR_NETWORK_CHANGED. A failed script or stylesheet leaves a blank page
@@ -523,21 +524,21 @@ class Broker:
             return web.FileResponse(MOBILE_JS, headers={"Content-Type": "application/javascript"})
         if path == "/_rt_fullscreen.js" and request.method == "GET":
             return web.FileResponse(FULLSCREEN_JS, headers={"Content-Type": "application/javascript"})
+        if path == "/_signin.js" and request.method == "GET":
+            return web.FileResponse(SIGNIN_JS, headers={"Content-Type": "application/javascript"})
         grant = self.store.grant(gid)
         if not grant or grant["owner"] != request["terminal_owner"]:
             if request.method == "GET" and (path == "/" or NAME.fullmatch(path[1:])):
-                return self.signin()
+                return self.signin(link=True)
             raise web.HTTPUnauthorized(text="Grant invalid or ended")
         request["terminal_path"] = path
         request["terminal_raw_path"] = request.raw_path[len("/g/" + gid):]
         if path == "/command/login" and request.method == "POST":
             return await self.login(request)
-        if path == "/_signin.js" and request.method == "GET":
-            return web.Response(text=SIGNIN_JS, content_type="application/javascript")
         page = request.method == "GET" and (path == "/" or path == "/" + grant["session"])
         presented = self.grant_cookie(request, gid) if page else None
         if page and (self.store.invalid(grant) or not presented):
-            return self.signin(gid if not self.store.invalid(grant) else None)
+            return self.signin(gid if not self.store.invalid(grant) else None, link=True)
         public = request.method == "GET" and (page or path == "/info/version" or path.startswith("/assets/"))
         if not public and path not in ("/session", "/session-list", "/ws/control") and not path.startswith("/ws/terminal/"):
             raise web.HTTPNotFound()
@@ -556,11 +557,13 @@ class Broker:
             # Zellij's client reloads this page to reconnect; renewing the cookie keeps an open-ended grant signed in.
             self.set_cookie(response, grant, presented["presented"])
             if response.content_type == "text/html" and b"<head>" in response.body:
-                response.body = response.body.replace(b"<head>", b"<head>" + RELOAD_GUARD + MOBILE_SCRIPT + FULLSCREEN_SCRIPT, 1)
+                response.body = response.body.replace(b"<head>", b"<head>" + RELOAD_GUARD + LINK_CLEANUP + MOBILE_SCRIPT +
+                                                      FULLSCREEN_SCRIPT, 1)
         return response
 
-    def signin(self, gid=None):
-        """The broker's own terminal pages: how to open a session, and the sign-in form of one grant."""
+    def signin(self, gid=None, link=False):
+        """The broker's own terminal pages: how to open a session, and the sign-in form of one grant. Under a grant's
+        path (link) both load the sign-in script, which also handles a sign-in link's credential."""
         heading, content = "Open a terminal session", (
             '<p>Issue a session grant with <code>rt grant SESSION</code> (or attach from a terminal with '
             '<code>rt attach SESSION</code>), then open the terminal URL it prints.</p>')
@@ -569,8 +572,9 @@ class Broker:
                 '<p class="muted">Paste the session credential that <code>rt grant</code> printed with this URL. '
                 'This browser then stays signed in to this session until its grant is revoked.</p>'
                 '<form><label>Session credential <input type="password" required autocomplete="off"></label>'
-                '<button type="submit" class="primary">Sign in</button></form><p role="status" aria-live="polite"></p>'
-                '<script src="./_signin.js" defer></script>')
+                '<button type="submit" class="primary">Sign in</button></form>')
+        if gid or link:
+            content += '<p role="status" aria-live="polite"></p><script src="./_signin.js" defer></script>'
         return web.Response(text='<!doctype html><html lang="en"><meta charset="utf-8">'
                             '<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark">'
                             '<title>Rootkeel sign-in</title><link rel="stylesheet" href="/_rt.css">'

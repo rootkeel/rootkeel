@@ -83,6 +83,7 @@ installer again with a new `machine.json` replaces the old one; revoke the old m
 | `--ca-cert` | `RT_CA_CERT` | Trust this CA certificate (for a lab CA). |
 | `--machine` | `RT_MACHINE` | The machine, by id or name, when several are enrolled. |
 | `--create` | | `attach`, `grant`: start a new session with this name if the machine has none. |
+| `--qr` | | `grant`: show a QR code instead of JSON; a phone that scans it opens the terminal signed in. |
 | `--name` | | `enrollment`: a name for the machine to enroll. |
 | `--zellij` | | The Zellij executable for `rt attach`. Default `zellij`. |
 

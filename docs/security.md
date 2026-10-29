@@ -36,8 +36,10 @@ Keep `db-key` out of the database's backups (back it up separately; see
 [operations.md](operations.md)).
 
 A grant is a standing capability: a leaked session credential or grant cookie works until the grant
-is revoked. List open grants with `rt grants` and revoke the ones you no longer use; at most 32 are
-open at a time. `rt attach` revokes its own grant when it exits.
+is revoked. The QR code of `rt grant --qr` holds the session credential too, in the URL fragment,
+which browsers never send to the server; anyone who scans or photographs the code can sign in. List
+open grants with `rt grants` and revoke the ones you no longer use; at most 32 are open at a time.
+`rt attach` revokes its own grant when it exits.
 
 `rt attach` passes the grant's Zellij login token to the stock Zellij client on its command line,
 where other processes of the same user (or root) on your computer can see it while it runs. The
@@ -62,9 +64,10 @@ directory so no remote-session credentials are saved.
 - Revoking a grant or a machine closes its open connections within half a second, including a
   revoke made by `python3 -m rootkeel.admin` in another process.
 
-The terminal page is Zellij's own, unchanged except for three scripts the broker adds: a guard that
-reloads the page when it fails to load during a network change, phone copy and paste, and a
-full-screen button. None of them sends anything anywhere.
+The terminal page is Zellij's own, unchanged except for four scripts the broker adds: a guard that
+reloads the page when it fails to load during a network change, one that takes an `rt grant --qr`
+credential out of the address bar, phone copy and paste, and a full-screen button. None of them
+sends anything anywhere.
 
 ## What the relay and agent enforce
 
