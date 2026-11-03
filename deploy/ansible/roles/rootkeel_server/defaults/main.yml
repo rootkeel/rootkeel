@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Settings for installing the Rootkeel server with Docker Compose, as in docs/install.md.
+# The rootkeel_* settings that mirror server/example.env name that setting in brackets;
+# docs/configuration.md describes each one.
+
+# The release to install: a tag of https://github.com/rootkeel/rootkeel. The settings file starts
+# as that release's server/example.env, so the image pins always match the checkout.
+rootkeel_version: v0.1.3
+rootkeel_repo_url: https://github.com/rootkeel/rootkeel.git
+rootkeel_checkout_dir: /opt/rootkeel-server
+rootkeel_env_file: /etc/rootkeel/rootkeel.env
+
+# [RT_ENVIRONMENT] Lowercase letters, digits and hyphens; names the Compose project rootkeel-<name>.
+rootkeel_environment: prod
+# [RT_PUBLIC_HOST] and [RT_RELAY_HOST]. Required: bare hostnames, no scheme, port or path. The
+# server also answers on owner.<rootkeel_public_host>, so three names must point at it.
+rootkeel_public_host: ""
+rootkeel_relay_host: ""
+# [RT_PUBLIC_PORT] and [RT_HTTPS_BIND].
+rootkeel_public_port: 443
+rootkeel_https_bind: "0.0.0.0:{{ rootkeel_public_port }}"
+# [RT_STATE_DIR] Private state, outside the checkout.
+rootkeel_state_dir: "/srv/rootkeel/{{ rootkeel_environment }}"
+# [RT_HSTS_MAX_AGE] Use 300 while you may still change hostnames.
+rootkeel_hsts_max_age: 31536000
+
+# Where the TLS certificate comes from:
+#   letsencrypt  certbot --standalone obtains one (needs the DNS records and inbound TCP 80);
+#   files        copy rootkeel_tls_cert_src and rootkeel_tls_key_src from the computer running
+#                Ansible (full chain and unencrypted key, PEM);
+#   lab-ca       prepare.sh --lab-ca makes a throwaway CA. For private trials only, never for a
+#                server reachable from the Internet.
+rootkeel_tls_mode: letsencrypt
+rootkeel_letsencrypt_email: ""
+rootkeel_tls_cert_src: ""
+rootkeel_tls_key_src: ""
+
+# With letsencrypt, wait up to this long for each of the three hostnames to point at
+# rootkeel_public_ip on its zone's nameservers before asking certbot for a certificate. This leaves
+# time to create the DNS records after a new VM's address is printed. rootkeel_public_ip is the
+# address the records must point at; set it when Ansible reaches the host by hostname or through
+# NAT rather than at its public IPv4 address.
+rootkeel_public_ip: "{{ ansible_host | default(inventory_hostname) }}"
+rootkeel_dns_wait_seconds: 900

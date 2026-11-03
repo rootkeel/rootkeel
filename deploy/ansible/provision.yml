@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Create the server VM and its firewall on one provider and add it to the in-memory inventory.
+#   ansible-playbook provision.yml -e rootkeel_cloud=hetzner
+# On its own this only creates the VM; site.yml also installs the server on it.
+- name: Create the Rootkeel server VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  roles:
+    - role: rootkeel_cloud_vm
+      vars:
+        rootkeel_vm_state: present

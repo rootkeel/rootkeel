@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# prepare.sh --lab-ca creates the CA and the server certificate in <state>/certs; nothing to do here.
+- name: Warn that the lab CA is for private trials only
+  ansible.builtin.debug:
+    msg: >-
+      Using a throwaway lab CA. Every client must trust {{ rootkeel_state_dir }}/certs/ca.crt
+      (rt --ca-cert). Never use it for a server reachable from the Internet.

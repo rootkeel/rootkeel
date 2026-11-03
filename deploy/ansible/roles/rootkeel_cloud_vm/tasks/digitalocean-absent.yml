@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+- name: Delete the Droplet
+  digitalocean.cloud.droplet:
+    name: "{{ rootkeel_vm_name }}"
+    region: "{{ rootkeel_digitalocean_region }}"
+    unique_name: true
+    state: absent
+
+- name: Delete the firewall
+  digitalocean.cloud.firewall:
+    name: "{{ rootkeel_vm_name }}"
+    state: absent
+
+- name: Delete the SSH key
+  digitalocean.cloud.ssh_key:
+    name: "{{ rootkeel_vm_name }}"
+    public_key: "{{ lookup('ansible.builtin.file', rootkeel_ssh_public_key_file) }}"
+    state: absent

@@ -1,0 +1,53 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# AWS: credentials and region come from the standard AWS variables (AWS_PROFILE, or
+# AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, and AWS_REGION) or ~/.aws.
+- name: Upload the SSH key
+  amazon.aws.ec2_key:
+    name: "{{ rootkeel_vm_name }}"
+    key_material: "{{ rootkeel_ssh_public_key }}"
+    region: "{{ rootkeel_aws_region }}"
+
+- name: Create the security group
+  amazon.aws.ec2_security_group:
+    name: "{{ rootkeel_vm_name }}"
+    description: Rootkeel server
+    region: "{{ rootkeel_aws_region }}"
+    rules:
+      - proto: tcp
+        ports: [22]
+        cidr_ip: "{{ rootkeel_ssh_source_cidrs }}"
+      - proto: tcp
+        ports: "{{ rootkeel_open_ports | map('int') | list }}"
+        cidr_ip: 0.0.0.0/0
+  register: rootkeel_aws_sg
+
+- name: Find the newest Debian 13 image
+  amazon.aws.ec2_ami_info:
+    owners:
+      - "{{ rootkeel_aws_image_owner }}"
+    filters:
+      name: "{{ rootkeel_aws_image_name }}"
+      state: available
+    region: "{{ rootkeel_aws_region }}"
+  register: rootkeel_aws_images
+
+- name: Create the instance
+  amazon.aws.ec2_instance:
+    name: "{{ rootkeel_vm_name }}"
+    region: "{{ rootkeel_aws_region }}"
+    instance_type: "{{ rootkeel_aws_instance_type }}"
+    image_id: "{{ (rootkeel_aws_images.images | sort(attribute='creation_date') | last).image_id }}"
+    key_name: "{{ rootkeel_vm_name }}"
+    security_group: "{{ rootkeel_aws_sg.group_id }}"
+    network_interfaces:
+      - assign_public_ip: true
+    state: running
+    wait: true
+    tags:
+      rootkeel: "{{ rootkeel_vm_name }}"
+  register: rootkeel_aws_instance
+
+- name: Use the instance's address
+  ansible.builtin.set_fact:
+    rootkeel_vm_ip: "{{ rootkeel_aws_instance.instances[0].public_ip_address }}"
+    rootkeel_vm_ssh_user: "{{ rootkeel_aws_ssh_user }}"

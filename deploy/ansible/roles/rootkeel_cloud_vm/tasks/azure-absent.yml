@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Everything was created in this one resource group, so deleting it deletes the VM, its disk, its
+# network and its address.
+- name: Delete the resource group and everything in it
+  azure.azcollection.azure_rm_resourcegroup:
+    name: "{{ rootkeel_azure_resource_group }}"
+    force_delete_nonempty: true
+    state: absent

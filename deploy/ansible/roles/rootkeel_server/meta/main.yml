@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+galaxy_info:
+  author: The Rootkeel Authors
+  description: Install the Rootkeel server with Docker Compose on one Linux host
+  license: AGPL-3.0-only
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Debian
+      versions:
+        - trixie
+dependencies: []

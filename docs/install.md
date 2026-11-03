@@ -8,6 +8,9 @@ commands run and what you should see.
 To run the server on Kubernetes instead, follow [helm.md](helm.md) for the server, then come back
 here at [step 9](#9-install-rt-on-your-computer).
 
+To create a cloud VM and run steps 4 to 8 on it with Ansible (AWS, Google Cloud, Azure, Hetzner
+Cloud or DigitalOcean), see [ansible.md](ansible.md). It is a draft.
+
 ## How the pieces fit
 
 You work with three kinds of computer. Every command in this guide is marked with where it runs.

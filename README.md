@@ -104,6 +104,8 @@ from a checkout.
 
 - [Install](docs/install.md): server, DNS, certificate, first machine.
 - [Install on Kubernetes](docs/helm.md): the Helm chart, in place of Docker Compose.
+- [Install on a cloud VM with Ansible](docs/ansible.md): a draft that creates the VM and runs the
+  install steps for you.
 - [Architecture](docs/architecture.md): the components and how a request flows.
 - [Configuration](docs/configuration.md): every setting of the server and the agent.
 - [Security](docs/security.md): what Rootkeel protects, and what it does not.

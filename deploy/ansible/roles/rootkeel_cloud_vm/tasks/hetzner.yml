@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Hetzner Cloud: the API token comes from HCLOUD_TOKEN.
+- name: Upload the SSH key  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.ssh_key:
+    name: "{{ rootkeel_vm_name }}"
+    public_key: "{{ rootkeel_ssh_public_key }}"
+
+- name: Create the firewall
+  hetzner.hcloud.firewall:
+    name: "{{ rootkeel_vm_name }}"
+    rules: "{{ rootkeel_hetzner_rules + (rootkeel_hetzner_http_rule if rootkeel_open_http | bool else []) }}"
+  vars:
+    rootkeel_hetzner_rules:
+      - description: ssh
+        direction: in
+        protocol: tcp
+        port: "22"
+        source_ips: "{{ rootkeel_ssh_source_cidrs }}"
+      - description: https
+        direction: in
+        protocol: tcp
+        port: "443"
+        source_ips: ["0.0.0.0/0", "::/0"]
+    rootkeel_hetzner_http_rule:
+      - description: http
+        direction: in
+        protocol: tcp
+        port: "80"
+        source_ips: ["0.0.0.0/0", "::/0"]
+
+- name: Create the server  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.server:
+    name: "{{ rootkeel_vm_name }}"
+    server_type: "{{ rootkeel_hetzner_server_type }}"
+    image: "{{ rootkeel_hetzner_image }}"
+    location: "{{ rootkeel_hetzner_location }}"
+    ssh_keys:
+      - "{{ rootkeel_vm_name }}"
+    firewalls:
+      - "{{ rootkeel_vm_name }}"
+    state: present
+  register: rootkeel_hetzner_server
+
+- name: Use the server's address
+  ansible.builtin.set_fact:
+    rootkeel_vm_ip: "{{ rootkeel_hetzner_server.hcloud_server.ipv4_address }}"
+    rootkeel_vm_ssh_user: root
