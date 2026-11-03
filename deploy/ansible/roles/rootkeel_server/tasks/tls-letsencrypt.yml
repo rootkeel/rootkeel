@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Option A of step 5 in docs/install.md: Let's Encrypt with certbot --standalone. Needs the three DNS
+# records from step 2 and inbound TCP 80.
+- name: Name the DNS records the certificate needs
+  ansible.builtin.debug:
+    msg:
+      - "Create these A records, each pointing at {{ rootkeel_public_ip }}, if they do not exist yet:"
+      - "{{ rootkeel_public_host }}"
+      - "owner.{{ rootkeel_public_host }}"
+      - "{{ rootkeel_relay_host }}"
+      - "Waiting up to {{ rootkeel_dns_wait_seconds }} seconds for them to resolve."
+
+- name: Install certbot and dig
+  ansible.builtin.apt:
+    name:
+      - bind9-dnsutils
+      - certbot
+    lock_timeout: 600
+
+# Ask the zone's own nameservers, without recursion, so a lookup that a resolver cached before the
+# records existed cannot hold up the run.
+- name: Wait for the DNS records on the zone's nameservers
+  ansible.builtin.shell:
+    executable: /bin/bash
+    cmd: |
+      set -euo pipefail
+      name={{ item | quote }}
+      zone=$(dig +noall +answer +authority SOA "$name" | awk '$4 == "SOA" { print $1; exit }')
+      [ -n "$zone" ]
+      servers=$(dig +short NS "$zone")
+      [ -n "$servers" ]
+      for ns in $servers; do
+        dig +norecurse +short A "$name" "@$ns" | grep -qxF {{ rootkeel_public_ip | quote }}
+      done
+  loop:
+    - "{{ rootkeel_public_host }}"
+    - "owner.{{ rootkeel_public_host }}"
+    - "{{ rootkeel_relay_host }}"
+  register: rootkeel_dns
+  until: rootkeel_dns.rc == 0
+  retries: "{{ (rootkeel_dns_wait_seconds | int / 10) | round(0, 'ceil') | int }}"
+  delay: 10
+  changed_when: false
+
+- name: Get the certificate
+  ansible.builtin.command:
+    argv:
+      - certbot
+      - certonly
+      - --standalone
+      - --non-interactive
+      - --agree-tos
+      - --email
+      - "{{ rootkeel_letsencrypt_email }}"
+      - --cert-name
+      - "{{ rootkeel_public_host }}"
+      - -d
+      - "{{ rootkeel_public_host }}"
+      - -d
+      - "owner.{{ rootkeel_public_host }}"
+      - -d
+      - "{{ rootkeel_relay_host }}"
+    creates: "/etc/letsencrypt/live/{{ rootkeel_public_host }}/fullchain.pem"
+
+- name: Restart the front door after each renewal
+  ansible.builtin.copy:
+    dest: /etc/letsencrypt/renewal-hooks/deploy/rootkeel.sh
+    owner: root
+    group: root
+    mode: "0755"
+    content: |
+      #!/bin/sh
+      cd {{ rootkeel_checkout_dir }} && scripts/compose.sh {{ rootkeel_env_file }} restart proxy
+
+- name: Use the Let's Encrypt certificate
+  ansible.builtin.set_fact:
+    rootkeel_tls_cert_file: "/etc/letsencrypt/live/{{ rootkeel_public_host }}/fullchain.pem"
+    rootkeel_tls_key_file: "/etc/letsencrypt/live/{{ rootkeel_public_host }}/privkey.pem"

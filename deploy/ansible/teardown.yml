@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Delete the VM and everything provision.yml created for it, including the server's state (the
+# owner credential and the database). Repeat the VM name to confirm:
+#   ansible-playbook teardown.yml -e rootkeel_cloud=hetzner -e rootkeel_teardown_confirm=rootkeel
+# Use the same rootkeel_vm_name and provider settings (region, zone, resource group) as when it
+# was created.
+- name: Delete the Rootkeel server VM
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  pre_tasks:
+    - name: Confirm the VM to delete
+      ansible.builtin.assert:
+        that: rootkeel_teardown_confirm | default('') == rootkeel_vm_name | default('rootkeel')
+        fail_msg: >-
+          This deletes the VM and all its data. Pass -e rootkeel_teardown_confirm=<VM name>
+          (default rootkeel) to confirm.
+        quiet: true
+  roles:
+    - role: rootkeel_cloud_vm
+      vars:
+        rootkeel_vm_state: absent

@@ -1,0 +1,68 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# DigitalOcean: the API token comes from DIGITALOCEAN_TOKEN (or DIGITALOCEAN_ACCESS_TOKEN).
+# Use the key as it is if the account already has it, under any name.
+- name: Look for the SSH key
+  digitalocean.cloud.ssh_keys_info:
+  register: rootkeel_do_keys
+
+- name: Upload the SSH key
+  digitalocean.cloud.ssh_key:
+    name: "{{ rootkeel_vm_name }}"
+    public_key: "{{ rootkeel_ssh_public_key }}"
+  when: rootkeel_do_keys.ssh_keys | selectattr('fingerprint', 'equalto', rootkeel_ssh_key_fingerprint) | list | length == 0
+
+# The firewall applies to every Droplet tagged with the VM's name. A cloud firewall drops all
+# outbound traffic that no rule allows, so it also allows all outbound traffic.
+- name: Create the firewall
+  digitalocean.cloud.firewall:
+    name: "{{ rootkeel_vm_name }}"
+    tags:
+      - "{{ rootkeel_vm_name }}"
+    inbound_rules: "{{ rootkeel_do_rules + (rootkeel_do_http_rule if rootkeel_open_http | bool else []) }}"
+    outbound_rules:
+      - protocol: tcp
+        ports: "0"
+        destinations:
+          addresses: ["0.0.0.0/0", "::/0"]
+      - protocol: udp
+        ports: "0"
+        destinations:
+          addresses: ["0.0.0.0/0", "::/0"]
+      - protocol: icmp
+        destinations:
+          addresses: ["0.0.0.0/0", "::/0"]
+  vars:
+    rootkeel_do_rules:
+      - protocol: tcp
+        ports: "22"
+        sources:
+          addresses: "{{ rootkeel_ssh_source_cidrs }}"
+      - protocol: tcp
+        ports: "{{ rootkeel_open_ports[0] }}"
+        sources:
+          addresses: ["0.0.0.0/0", "::/0"]
+    rootkeel_do_http_rule:
+      - protocol: tcp
+        ports: "80"
+        sources:
+          addresses: ["0.0.0.0/0", "::/0"]
+
+- name: Create the Droplet
+  digitalocean.cloud.droplet:
+    name: "{{ rootkeel_vm_name }}"
+    region: "{{ rootkeel_digitalocean_region }}"
+    size: "{{ rootkeel_digitalocean_size }}"
+    image: "{{ rootkeel_digitalocean_image }}"
+    ssh_keys:
+      - "{{ rootkeel_ssh_key_fingerprint }}"
+    tags:
+      - "{{ rootkeel_vm_name }}"
+    unique_name: true
+    state: present
+  register: rootkeel_do_droplet
+
+- name: Use the Droplet's address
+  ansible.builtin.set_fact:
+    rootkeel_vm_ip: >-
+      {{ (rootkeel_do_droplet.droplet.networks.v4 | selectattr('type', 'equalto', 'public') | first).ip_address }}
+    rootkeel_vm_ssh_user: root

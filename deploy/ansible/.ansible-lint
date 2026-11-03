@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Both roles share the rootkeel_* settings (rootkeel_public_host, rootkeel_vm_name, ...), so one
+# set of -e values drives provision.yml, install.yml and teardown.yml. That is deliberate.
+skip_list:
+  - var-naming[no-role-prefix]

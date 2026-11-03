@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Create a VM on one provider and install the Rootkeel server on it, for example:
+#   ansible-playbook site.yml -e rootkeel_cloud=hetzner \
+#     -e rootkeel_public_host=term.example.com -e rootkeel_relay_host=term-relay.example.com \
+#     -e rootkeel_letsencrypt_email=admin@example.com
+# docs/ansible.md describes every setting.
+- name: Create the VM
+  ansible.builtin.import_playbook: provision.yml
+
+- name: Install the server
+  ansible.builtin.import_playbook: install.yml

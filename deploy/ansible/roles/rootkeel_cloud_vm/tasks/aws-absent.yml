@@ -1,0 +1,21 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+- name: Delete the instance
+  amazon.aws.ec2_instance:
+    region: "{{ rootkeel_aws_region }}"
+    filters:
+      "tag:rootkeel": "{{ rootkeel_vm_name }}"
+      instance-state-name: [pending, running, stopping, stopped]
+    state: absent
+    wait: true
+
+- name: Delete the security group
+  amazon.aws.ec2_security_group:
+    name: "{{ rootkeel_vm_name }}"
+    region: "{{ rootkeel_aws_region }}"
+    state: absent
+
+- name: Delete the SSH key
+  amazon.aws.ec2_key:
+    name: "{{ rootkeel_vm_name }}"
+    region: "{{ rootkeel_aws_region }}"
+    state: absent

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+- name: Delete the instance
+  google.cloud.gcp_compute_instance:
+    name: "{{ rootkeel_vm_name }}"
+    auth_kind: "{{ rootkeel_gcp_auth_kind }}"
+    zone: "{{ rootkeel_gcp_zone }}"
+    state: absent
+
+- name: Delete the firewall rules
+  google.cloud.gcp_compute_firewall:
+    name: "{{ item }}"
+    auth_kind: "{{ rootkeel_gcp_auth_kind }}"
+    state: absent
+  loop:
+    - "{{ rootkeel_vm_name }}"
+    - "{{ rootkeel_vm_name }}-ssh"

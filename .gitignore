@@ -4,3 +4,4 @@ __pycache__/
 *.env
 !server/example.env
 machine.json
+/deploy/ansible/.ansible/

@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+- name: Delete the server  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.server:
+    name: "{{ rootkeel_vm_name }}"
+    state: absent
+
+- name: Delete the firewall  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.firewall:
+    name: "{{ rootkeel_vm_name }}"
+    state: absent
+
+- name: Delete the SSH key  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.ssh_key:
+    name: "{{ rootkeel_vm_name }}"
+    state: absent

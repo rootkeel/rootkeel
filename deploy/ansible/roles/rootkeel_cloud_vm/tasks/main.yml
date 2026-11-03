@@ -1,0 +1,65 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Create or delete the server VM on one provider. Each provider's file creates a firewall that lets
+# in TCP 22, rootkeel_public_port (TCP 443) and, for certbot, TCP 80, then a Debian 13 VM, and sets
+# rootkeel_vm_ip and rootkeel_vm_ssh_user. This runs on the computer running Ansible and talks to the provider's API.
+
+- name: Check the provider settings
+  ansible.builtin.assert:
+    that:
+      - rootkeel_cloud in ['aws', 'gcp', 'azure', 'hetzner', 'digitalocean']
+      - rootkeel_vm_state in ['present', 'absent']
+      - rootkeel_vm_name is match('^[a-z][a-z0-9-]{0,40}$')
+    fail_msg: >-
+      Set rootkeel_cloud to aws, gcp, azure, hetzner or digitalocean, rootkeel_vm_state to present
+      or absent, and rootkeel_vm_name to lowercase letters, digits and hyphens, starting with a
+      letter.
+    quiet: true
+
+- name: Read the public SSH key
+  ansible.builtin.set_fact:
+    rootkeel_ssh_public_key: "{{ lookup('ansible.builtin.file', rootkeel_ssh_public_key_file) }}"
+  when: rootkeel_vm_state == 'present'
+
+# Hetzner Cloud and DigitalOcean refuse a second copy of a key, and name keys by this MD5 fingerprint.
+- name: Read the public SSH key's fingerprint
+  ansible.builtin.command:
+    argv: [ssh-keygen, -l, -E, md5, -f, "{{ rootkeel_ssh_public_key_file | expanduser }}"]
+  register: rootkeel_ssh_keygen
+  changed_when: false
+  check_mode: false
+  when: rootkeel_vm_state == 'present' and rootkeel_cloud in ['hetzner', 'digitalocean']
+
+- name: Use the public SSH key's fingerprint
+  ansible.builtin.set_fact:
+    rootkeel_ssh_key_fingerprint: "{{ rootkeel_ssh_keygen.stdout.split()[1] | regex_replace('^MD5:', '') }}"
+  when: rootkeel_ssh_keygen is not skipped
+
+- name: Open these ports
+  ansible.builtin.set_fact:
+    rootkeel_open_ports: "{{ [rootkeel_public_port | default(443) | string] + (['80'] if rootkeel_open_http | bool else []) }}"
+
+- name: Create the VM
+  ansible.builtin.include_tasks: "{{ rootkeel_cloud }}.yml"
+  when: rootkeel_vm_state == 'present'
+
+- name: Delete the VM
+  ansible.builtin.include_tasks: "{{ rootkeel_cloud }}-absent.yml"
+  when: rootkeel_vm_state == 'absent'
+
+- name: Add the VM to the inventory
+  ansible.builtin.add_host:
+    name: "{{ rootkeel_vm_name }}"
+    groups: rootkeel_server
+    ansible_host: "{{ rootkeel_vm_ip }}"
+    ansible_user: "{{ rootkeel_vm_ssh_user }}"
+    ansible_ssh_private_key_file: "{{ rootkeel_ssh_private_key_file or omit }}"
+    # A new VM has a new host key; accept it the first time only.
+    ansible_ssh_common_args: -o StrictHostKeyChecking=accept-new
+    rootkeel_public_ip: "{{ rootkeel_vm_ip }}"
+  changed_when: false
+  when: rootkeel_vm_state == 'present'
+
+- name: Show the VM's address
+  ansible.builtin.debug:
+    msg: "{{ rootkeel_cloud }} VM {{ rootkeel_vm_name }} has public IPv4 address {{ rootkeel_vm_ip }}"
+  when: rootkeel_vm_state == 'present'

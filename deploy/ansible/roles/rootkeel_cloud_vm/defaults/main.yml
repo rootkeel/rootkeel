@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Settings for creating (or deleting) the one VM that runs the Rootkeel server. Credentials are
+# never set here: each provider's collection reads them from its usual environment variables or
+# files (see docs/ansible.md).
+
+# Which provider: aws, gcp, azure, hetzner or digitalocean. Required.
+rootkeel_cloud: ""
+# present creates the VM and its firewall; absent deletes everything this role created.
+rootkeel_vm_state: present
+# The VM's name. The firewall, SSH key and other resources are named after it.
+rootkeel_vm_name: rootkeel
+# The public SSH key to install for logging in, and the matching private key, if it is not your
+# SSH agent's or ssh's default.
+rootkeel_ssh_public_key_file: "~/.ssh/id_ed25519.pub"
+rootkeel_ssh_private_key_file: ""
+# Who may reach SSH (TCP 22). Narrow this to your own address where you can.
+rootkeel_ssh_source_cidrs:
+  - 0.0.0.0/0
+# Open TCP 80 for certbot --standalone. Only needed with rootkeel_tls_mode letsencrypt.
+rootkeel_open_http: "{{ (rootkeel_tls_mode | default('letsencrypt')) == 'letsencrypt' }}"
+
+# AWS (amazon.aws). Uses the default VPC of the region. The image is the newest official Debian 13
+# image, published by the Debian project's AWS account.
+rootkeel_aws_region: "{{ lookup('ansible.builtin.env', 'AWS_REGION') | default('us-east-1', true) }}"
+rootkeel_aws_instance_type: t3.small
+rootkeel_aws_image_owner: "136693071363"
+rootkeel_aws_image_name: debian-13-amd64-*
+rootkeel_aws_ssh_user: admin
+
+# Google Cloud (google.cloud). The project comes from GCP_PROJECT; the credential kind from
+# GCP_AUTH_KIND (application: gcloud auth application-default login; serviceaccount: with
+# GCP_SERVICE_ACCOUNT_FILE). Uses the project's default network.
+rootkeel_gcp_auth_kind: "{{ lookup('ansible.builtin.env', 'GCP_AUTH_KIND') | default('application', true) }}"
+rootkeel_gcp_zone: us-central1-a
+rootkeel_gcp_machine_type: e2-small
+rootkeel_gcp_image: projects/debian-cloud/global/images/family/debian-13
+rootkeel_gcp_disk_size_gb: 20
+rootkeel_gcp_ssh_user: rootkeel
+
+# Azure (azure.azcollection). Everything goes in one new resource group, which teardown deletes
+# whole.
+rootkeel_azure_location: eastus
+rootkeel_azure_resource_group: "{{ rootkeel_vm_name }}-rg"
+rootkeel_azure_vm_size: Standard_B2s
+rootkeel_azure_image:
+  publisher: Debian
+  offer: debian-13
+  sku: "13"
+  version: latest
+rootkeel_azure_ssh_user: rootkeel
+
+# Hetzner Cloud (hetzner.hcloud).
+rootkeel_hetzner_location: nbg1
+rootkeel_hetzner_server_type: cx23
+rootkeel_hetzner_image: debian-13
+
+# DigitalOcean (digitalocean.cloud).
+rootkeel_digitalocean_region: nyc3
+rootkeel_digitalocean_size: s-1vcpu-2gb
+rootkeel_digitalocean_image: debian-13-x64

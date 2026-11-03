@@ -1,0 +1,6 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+- name: Restart the front door
+  ansible.builtin.command:
+    cmd: scripts/compose.sh {{ rootkeel_env_file }} restart proxy
+    chdir: "{{ rootkeel_checkout_dir }}"
+  changed_when: true

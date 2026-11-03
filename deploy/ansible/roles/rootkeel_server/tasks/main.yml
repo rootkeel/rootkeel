@@ -1,0 +1,171 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Steps 4 to 8 of docs/install.md, run on the server: get the release, get a TLS certificate, write
+# the settings file, prepare the state and start the Compose stack.
+
+- name: Check the settings
+  ansible.builtin.assert:
+    that:
+      - rootkeel_public_host | length > 0
+      - rootkeel_relay_host | length > 0
+      - rootkeel_relay_host != rootkeel_public_host
+      - rootkeel_relay_host != 'owner.' ~ rootkeel_public_host
+      - rootkeel_tls_mode in ['letsencrypt', 'files', 'lab-ca']
+      - rootkeel_tls_mode != 'letsencrypt' or rootkeel_letsencrypt_email | length > 0
+      - rootkeel_tls_mode != 'files' or (rootkeel_tls_cert_src | length > 0 and rootkeel_tls_key_src | length > 0)
+    fail_msg: >-
+      Set rootkeel_public_host and rootkeel_relay_host (two different names; the relay name must
+      not be owner.<public host>), and rootkeel_tls_mode to letsencrypt (with
+      rootkeel_letsencrypt_email), files (with rootkeel_tls_cert_src and rootkeel_tls_key_src) or
+      lab-ca.
+    quiet: true
+
+- name: Look for cloud-init
+  ansible.builtin.stat:
+    path: /usr/bin/cloud-init
+  register: rootkeel_cloud_init
+
+- name: Wait for cloud-init to finish first-boot setup
+  ansible.builtin.command: cloud-init status --wait
+  register: rootkeel_cloud_init_status
+  changed_when: false
+  # 2 means finished with recoverable errors, which still leaves a usable host.
+  failed_when: rootkeel_cloud_init_status.rc not in [0, 2]
+  when: rootkeel_cloud_init.stat.exists
+
+- name: Install the server prerequisites
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - git
+      - openssl
+      - python3
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 600
+
+- name: Look for Docker
+  ansible.builtin.stat:
+    path: /usr/bin/docker
+  register: rootkeel_docker_binary
+
+- name: Install Docker from the distribution
+  ansible.builtin.apt:
+    name: docker.io
+    lock_timeout: 600
+  when: not rootkeel_docker_binary.stat.exists
+
+- name: Start Docker and enable it at boot
+  ansible.builtin.systemd_service:
+    name: docker
+    state: started
+    enabled: true
+
+- name: Check out the release
+  ansible.builtin.git:
+    repo: "{{ rootkeel_repo_url }}"
+    dest: "{{ rootkeel_checkout_dir }}"
+    version: "{{ rootkeel_version }}"
+    force: false
+
+- name: Get the TLS certificate
+  ansible.builtin.include_tasks: "tls-{{ rootkeel_tls_mode }}.yml"
+
+- name: Create the settings directory
+  ansible.builtin.file:
+    path: "{{ rootkeel_env_file | dirname }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Start the settings file from the release's example settings
+  ansible.builtin.copy:
+    src: "{{ rootkeel_checkout_dir }}/server/example.env"
+    dest: "{{ rootkeel_env_file }}"
+    remote_src: true
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Write the settings
+  ansible.builtin.lineinfile:
+    path: "{{ rootkeel_env_file }}"
+    regexp: "^#?\\s*{{ item.key }}="
+    line: "{{ item.key }}={{ item.value }}"
+  loop: "{{ rootkeel_settings | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  vars:
+    rootkeel_settings: >-
+      {{ {
+        'RT_ENVIRONMENT': rootkeel_environment,
+        'RT_PUBLIC_HOST': rootkeel_public_host,
+        'RT_RELAY_HOST': rootkeel_relay_host,
+        'RT_PUBLIC_PORT': rootkeel_public_port,
+        'RT_HTTPS_BIND': rootkeel_https_bind,
+        'RT_STATE_DIR': rootkeel_state_dir,
+        'RT_HSTS_MAX_AGE': rootkeel_hsts_max_age,
+        'RT_TLS_CERT_FILE': rootkeel_tls_cert_file | default(''),
+        'RT_TLS_KEY_FILE': rootkeel_tls_key_file | default(''),
+      } | dict2items | rejectattr('value', 'equalto', '') | items2dict }}
+
+- name: Leave the certificate settings unset for the lab CA
+  ansible.builtin.lineinfile:
+    path: "{{ rootkeel_env_file }}"
+    regexp: "^{{ item }}="
+    state: absent
+  loop:
+    - RT_TLS_CERT_FILE
+    - RT_TLS_KEY_FILE
+  when: rootkeel_tls_mode == 'lab-ca'
+
+- name: Check the settings file
+  ansible.builtin.command:
+    cmd: python3 -m rootkeel.config check-env {{ rootkeel_env_file }}
+    chdir: "{{ rootkeel_checkout_dir }}"
+  changed_when: false
+
+- name: Prepare the state
+  ansible.builtin.command:
+    cmd: >-
+      scripts/prepare.sh {{ rootkeel_env_file }}
+      {{ '--lab-ca' if rootkeel_tls_mode == 'lab-ca' else '' }}
+    chdir: "{{ rootkeel_checkout_dir }}"
+  register: rootkeel_prepare
+  # prepare.sh never replaces existing state, so running it again only re-checks it.
+  changed_when: false
+
+- name: Start the server
+  ansible.builtin.command:
+    cmd: scripts/compose.sh {{ rootkeel_env_file }} up -d
+    chdir: "{{ rootkeel_checkout_dir }}"
+  register: rootkeel_compose_up
+  changed_when: rootkeel_compose_up.stderr is search('Created|Recreated|Started')
+
+- name: Apply a changed certificate
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait for the server to answer
+  ansible.builtin.command:
+    argv: >-
+      {{ ['curl', '-sS', '--fail', '--max-time', '10',
+          '--resolve', rootkeel_public_host ~ ':' ~ rootkeel_public_port ~ ':' ~ rootkeel_local_address]
+         + (['--cacert', rootkeel_state_dir ~ '/certs/ca.crt'] if rootkeel_tls_mode == 'lab-ca' else [])
+         + ['https://' ~ rootkeel_public_host ~ ':' ~ rootkeel_public_port ~ '/'] }}
+  vars:
+    rootkeel_bind_address: "{{ rootkeel_https_bind | regex_replace(':[0-9]+$', '') }}"
+    rootkeel_local_address: "{{ '127.0.0.1' if rootkeel_bind_address in ['0.0.0.0', ''] else rootkeel_bind_address }}"
+  register: rootkeel_landing
+  until: rootkeel_landing.stdout is search('<title>Rootkeel sign-in</title>')
+  retries: 30
+  delay: 5
+  changed_when: false
+
+- name: Say what to do next
+  ansible.builtin.debug:
+    msg:
+      - "Rootkeel {{ rootkeel_version }} answers on https://{{ rootkeel_public_host }}:{{ rootkeel_public_port }}/"
+      - "The owner credential is in {{ rootkeel_state_dir }}/owner on the server: sudo cat {{ rootkeel_state_dir }}/owner"
+      - "Continue with step 9 of docs/install.md (install rt on your computer)."

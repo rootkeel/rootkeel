@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Option B of step 5 in docs/install.md: a certificate you already have.
+- name: Create the certificate directory
+  ansible.builtin.file:
+    path: /etc/rootkeel/tls
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Copy the certificate full chain
+  ansible.builtin.copy:
+    src: "{{ rootkeel_tls_cert_src }}"
+    dest: /etc/rootkeel/tls/fullchain.pem
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart the front door
+
+- name: Copy the private key
+  ansible.builtin.copy:
+    src: "{{ rootkeel_tls_key_src }}"
+    dest: /etc/rootkeel/tls/privkey.pem
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart the front door
+
+- name: Use the copied certificate
+  ansible.builtin.set_fact:
+    rootkeel_tls_cert_file: /etc/rootkeel/tls/fullchain.pem
+    rootkeel_tls_key_file: /etc/rootkeel/tls/privkey.pem

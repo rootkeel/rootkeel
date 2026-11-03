@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Google Cloud: the project comes from GCP_PROJECT, the credential kind from GCP_AUTH_KIND
+# (default application, from gcloud auth application-default login) and, for a service account,
+# the key file from GCP_SERVICE_ACCOUNT_FILE.
+- name: Create the firewall rule
+  google.cloud.gcp_compute_firewall:
+    name: "{{ rootkeel_vm_name }}"
+    auth_kind: "{{ rootkeel_gcp_auth_kind }}"
+    network:
+      selfLink: global/networks/default
+    allowed:
+      - ip_protocol: tcp
+        ports: "{{ rootkeel_open_ports }}"
+    source_ranges:
+      - 0.0.0.0/0
+    target_tags:
+      - "{{ rootkeel_vm_name }}"
+    state: present
+
+- name: Create the SSH firewall rule
+  google.cloud.gcp_compute_firewall:
+    name: "{{ rootkeel_vm_name }}-ssh"
+    auth_kind: "{{ rootkeel_gcp_auth_kind }}"
+    network:
+      selfLink: global/networks/default
+    allowed:
+      - ip_protocol: tcp
+        ports:
+          - "22"
+    source_ranges: "{{ rootkeel_ssh_source_cidrs }}"
+    target_tags:
+      - "{{ rootkeel_vm_name }}"
+    state: present
+
+- name: Create the instance
+  google.cloud.gcp_compute_instance:
+    name: "{{ rootkeel_vm_name }}"
+    auth_kind: "{{ rootkeel_gcp_auth_kind }}"
+    zone: "{{ rootkeel_gcp_zone }}"
+    machine_type: "{{ rootkeel_gcp_machine_type }}"
+    disks:
+      - auto_delete: true
+        boot: true
+        initialize_params:
+          source_image: "{{ rootkeel_gcp_image }}"
+          disk_size_gb: "{{ rootkeel_gcp_disk_size_gb }}"
+    network_interfaces:
+      - network:
+          selfLink: global/networks/default
+        access_configs:
+          - name: External NAT
+            type: ONE_TO_ONE_NAT
+    metadata:
+      ssh-keys: "{{ rootkeel_gcp_ssh_user }}:{{ rootkeel_ssh_public_key }}"
+    tags:
+      items:
+        - "{{ rootkeel_vm_name }}"
+    state: present
+  register: rootkeel_gcp_instance
+
+- name: Use the instance's address
+  ansible.builtin.set_fact:
+    rootkeel_vm_ip: "{{ rootkeel_gcp_instance.networkInterfaces[0].accessConfigs[0].natIP }}"
+    rootkeel_vm_ssh_user: "{{ rootkeel_gcp_ssh_user }}"

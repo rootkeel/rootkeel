@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Install the Rootkeel server on the hosts in the rootkeel_server group: the VM that provision.yml
+# just created. site.yml runs both.
+- name: Install the Rootkeel server
+  hosts: rootkeel_server
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Wait for SSH
+      ansible.builtin.wait_for_connection:
+        timeout: 600
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    - name: Install the server
+      ansible.builtin.include_role:
+        name: rootkeel_server

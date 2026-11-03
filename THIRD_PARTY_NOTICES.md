@@ -57,6 +57,23 @@ executable. Its `licenses/` directory carries the texts below.
 None of these build tools ends up in an image. Of PyInstaller, only its bootloader ends up in the
 standalone `rt`, as above.
 
+## Optional deployment tooling
+
+The draft Ansible playbooks in `deploy/ansible` ([docs/ansible.md](docs/ansible.md)) use these
+collections, which you install on your own workstation. Nothing from them ends up on the server.
+
+| Component | Pin | Used for | Licence |
+| --- | --- | --- | --- |
+| [amazon.aws](https://github.com/ansible-collections/amazon.aws) | 12.0.0, in `deploy/ansible/requirements.yml` | Creating the VM on AWS | GPL-3.0-or-later |
+| [google.cloud](https://github.com/ansible-collections/google.cloud) | 1.15.0 | Creating the VM on Google Cloud | GPL-2.0-or-later |
+| [azure.azcollection](https://github.com/ansible-collections/azure) | 4.2.0 | Creating the VM on Azure | GPL-2.0-or-later |
+| [hetzner.hcloud](https://github.com/ansible-collections/hetzner.hcloud) | 7.2.0 | Creating the VM on Hetzner Cloud | GPL-3.0-or-later |
+| [digitalocean.cloud](https://github.com/digitalocean/ansible-collection) | 1.9.0 | Creating the VM on DigitalOcean | GPL-3.0 |
+
+On the server, the playbooks install the distribution's `docker.io` package (when Docker is
+missing), `git`, `curl`, `openssl`, `python3`, `ca-certificates` and, for Let's Encrypt,
+`certbot` and `bind9-dnsutils`, each under its own licence in `/usr/share/doc/*/copyright`.
+
 ## Files derived from third parties
 
 `notices/Zellij-MIT.txt` is the unmodified MIT licence from Zellij v0.45.1 (SHA-256
