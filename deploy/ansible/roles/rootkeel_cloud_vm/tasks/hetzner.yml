@@ -19,7 +19,7 @@
       - description: https
         direction: in
         protocol: tcp
-        port: "443"
+        port: "{{ rootkeel_open_ports[0] }}"
         source_ips: ["0.0.0.0/0", "::/0"]
     rootkeel_hetzner_http_rule:
       - description: http

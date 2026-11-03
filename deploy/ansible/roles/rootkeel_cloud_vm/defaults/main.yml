@@ -18,8 +18,6 @@ rootkeel_ssh_source_cidrs:
   - 0.0.0.0/0
 # Open TCP 80 for certbot --standalone. Only needed with rootkeel_tls_mode letsencrypt.
 rootkeel_open_http: "{{ (rootkeel_tls_mode | default('letsencrypt')) == 'letsencrypt' }}"
-# The inventory group the new VM joins; install.yml installs the server on this group.
-rootkeel_server_group: rootkeel_server
 
 # AWS (amazon.aws). Uses the default VPC of the region. The image is the newest official Debian 13
 # image, published by the Debian project's AWS account.

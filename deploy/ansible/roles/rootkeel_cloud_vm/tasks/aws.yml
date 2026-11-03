@@ -41,6 +41,9 @@
     security_group: "{{ rootkeel_aws_sg.group_id }}"
     network_interfaces:
       - assign_public_ip: true
+    filters:
+      "tag:rootkeel": "{{ rootkeel_vm_name }}"
+      instance-state-name: [pending, running, stopping, stopped]
     state: running
     wait: true
     tags:

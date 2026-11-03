@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Create or delete the server VM on one provider. Each provider's file creates a firewall that lets
-# in TCP 22, TCP 443 and, for certbot, TCP 80, then a Debian 13 VM, and sets rootkeel_vm_ip and
-# rootkeel_vm_ssh_user. This runs on the computer running Ansible and talks to the provider's API.
+# in TCP 22, rootkeel_public_port (TCP 443) and, for certbot, TCP 80, then a Debian 13 VM, and sets
+# rootkeel_vm_ip and rootkeel_vm_ssh_user. This runs on the computer running Ansible and talks to the provider's API.
 
 - name: Check the provider settings
   ansible.builtin.assert:
@@ -22,7 +22,7 @@
 
 - name: Open these ports
   ansible.builtin.set_fact:
-    rootkeel_open_ports: "{{ ['443'] + (['80'] if rootkeel_open_http | bool else []) }}"
+    rootkeel_open_ports: "{{ [rootkeel_public_port | default(443) | string] + (['80'] if rootkeel_open_http | bool else []) }}"
 
 - name: Create the VM
   ansible.builtin.include_tasks: "{{ rootkeel_cloud }}.yml"
@@ -35,7 +35,7 @@
 - name: Add the VM to the inventory
   ansible.builtin.add_host:
     name: "{{ rootkeel_vm_name }}"
-    groups: "{{ rootkeel_server_group }}"
+    groups: rootkeel_server
     ansible_host: "{{ rootkeel_vm_ip }}"
     ansible_user: "{{ rootkeel_vm_ssh_user }}"
     ansible_ssh_private_key_file: "{{ rootkeel_ssh_private_key_file or omit }}"

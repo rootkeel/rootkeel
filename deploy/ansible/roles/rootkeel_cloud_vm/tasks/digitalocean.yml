@@ -33,7 +33,7 @@
         sources:
           addresses: "{{ rootkeel_ssh_source_cidrs }}"
       - protocol: tcp
-        ports: "443"
+        ports: "{{ rootkeel_open_ports[0] }}"
         sources:
           addresses: ["0.0.0.0/0", "::/0"]
     rootkeel_do_http_rule:

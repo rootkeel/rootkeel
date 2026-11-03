@@ -29,9 +29,9 @@ example values as install.md (`term.example.com`, `owner.term.example.com`,
 | `teardown.yml` | Deletes the VM, all its data and everything `provision.yml` created for it. |
 | `requirements.yml` | The providers' Ansible collections, pinned. |
 
-Each provider gets the same thing: a firewall that lets in TCP 22 (SSH), TCP 443 and, for
-certbot, TCP 80; an SSH key from your workstation; and one Debian 13 VM with a public IPv4
-address. Everything is named after `rootkeel_vm_name` (default `rootkeel`).
+Each provider gets the same thing: a firewall that lets in TCP 22 (SSH), `rootkeel_public_port`
+(TCP 443) and, for certbot, TCP 80; an SSH key from your workstation; and one Debian 13 VM with a
+public IPv4 address. Everything is named after `rootkeel_vm_name` (default `rootkeel`).
 
 | Provider | `rootkeel_cloud` | Collection | Default size and place | Created |
 |---|---|---|---|---|
