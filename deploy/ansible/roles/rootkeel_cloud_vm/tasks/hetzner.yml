@@ -1,9 +1,16 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Hetzner Cloud: the API token comes from HCLOUD_TOKEN.
+# Use the key as it is if the project already has it, under any name.
+- name: Look for the SSH key  # noqa: args[module] api_token comes from HCLOUD_TOKEN
+  hetzner.hcloud.ssh_key_info:
+    fingerprint: "{{ rootkeel_ssh_key_fingerprint }}"
+  register: rootkeel_hetzner_keys
+
 - name: Upload the SSH key  # noqa: args[module] api_token comes from HCLOUD_TOKEN
   hetzner.hcloud.ssh_key:
     name: "{{ rootkeel_vm_name }}"
     public_key: "{{ rootkeel_ssh_public_key }}"
+  when: rootkeel_hetzner_keys.hcloud_ssh_key_info | length == 0
 
 - name: Create the firewall
   hetzner.hcloud.firewall:
@@ -35,7 +42,7 @@
     image: "{{ rootkeel_hetzner_image }}"
     location: "{{ rootkeel_hetzner_location }}"
     ssh_keys:
-      - "{{ rootkeel_vm_name }}"
+      - "{{ (rootkeel_hetzner_keys.hcloud_ssh_key_info | map(attribute='name') | first) | default(rootkeel_vm_name) }}"
     firewalls:
       - "{{ rootkeel_vm_name }}"
     state: present

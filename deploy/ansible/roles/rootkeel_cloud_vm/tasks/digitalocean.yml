@@ -1,10 +1,15 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # DigitalOcean: the API token comes from DIGITALOCEAN_TOKEN (or DIGITALOCEAN_ACCESS_TOKEN).
+# Use the key as it is if the account already has it, under any name.
+- name: Look for the SSH key
+  digitalocean.cloud.ssh_keys_info:
+  register: rootkeel_do_keys
+
 - name: Upload the SSH key
   digitalocean.cloud.ssh_key:
     name: "{{ rootkeel_vm_name }}"
     public_key: "{{ rootkeel_ssh_public_key }}"
-  register: rootkeel_do_key
+  when: rootkeel_do_keys.ssh_keys | selectattr('fingerprint', 'equalto', rootkeel_ssh_key_fingerprint) | list | length == 0
 
 # The firewall applies to every Droplet tagged with the VM's name. A cloud firewall drops all
 # outbound traffic that no rule allows, so it also allows all outbound traffic.
@@ -49,7 +54,7 @@
     size: "{{ rootkeel_digitalocean_size }}"
     image: "{{ rootkeel_digitalocean_image }}"
     ssh_keys:
-      - "{{ rootkeel_do_key.ssh_key.fingerprint }}"
+      - "{{ rootkeel_ssh_key_fingerprint }}"
     tags:
       - "{{ rootkeel_vm_name }}"
     unique_name: true

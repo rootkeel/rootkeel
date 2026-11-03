@@ -32,6 +32,8 @@ example values as install.md (`term.example.com`, `owner.term.example.com`,
 Each provider gets the same thing: a firewall that lets in TCP 22 (SSH), `rootkeel_public_port`
 (TCP 443) and, for certbot, TCP 80; an SSH key from your workstation; and one Debian 13 VM with a
 public IPv4 address. Everything is named after `rootkeel_vm_name` (default `rootkeel`).
+On Hetzner Cloud and DigitalOcean, a key already in the project or account is used as it is,
+under its own name, and teardown leaves it there.
 
 | Provider | `rootkeel_cloud` | Collection | Default size and place | Created |
 |---|---|---|---|---|

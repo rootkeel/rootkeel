@@ -20,6 +20,20 @@
     rootkeel_ssh_public_key: "{{ lookup('ansible.builtin.file', rootkeel_ssh_public_key_file) }}"
   when: rootkeel_vm_state == 'present'
 
+# Hetzner Cloud and DigitalOcean refuse a second copy of a key, and name keys by this MD5 fingerprint.
+- name: Read the public SSH key's fingerprint
+  ansible.builtin.command:
+    argv: [ssh-keygen, -l, -E, md5, -f, "{{ rootkeel_ssh_public_key_file | expanduser }}"]
+  register: rootkeel_ssh_keygen
+  changed_when: false
+  check_mode: false
+  when: rootkeel_vm_state == 'present' and rootkeel_cloud in ['hetzner', 'digitalocean']
+
+- name: Use the public SSH key's fingerprint
+  ansible.builtin.set_fact:
+    rootkeel_ssh_key_fingerprint: "{{ rootkeel_ssh_keygen.stdout.split()[1] | regex_replace('^MD5:', '') }}"
+  when: rootkeel_ssh_keygen is not skipped
+
 - name: Open these ports
   ansible.builtin.set_fact:
     rootkeel_open_ports: "{{ [rootkeel_public_port | default(443) | string] + (['80'] if rootkeel_open_http | bool else []) }}"
